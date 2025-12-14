@@ -1,0 +1,24 @@
+{
+  "name": "electron",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "main": "dist-electron/main.mjs",
+  "scripts": {
+    "dev": "tsdown && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron dist-electron/main.mjs",
+    "build": "tsdown",
+    "start": "electron dist-electron/main.mjs",
+    "package": "electron-builder"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "cross-env": "^10.1.0",
+    "node-fetch": "^3.3.2",
+    "tsdown": "^0.17.3"
+  },
+  "dependencies": {
+    "electron": "^39.2.7"
+  }
+}
