@@ -1,9 +1,10 @@
-import { app, BrowserWindow, session, shell, ipcMain } from "electron";
+import { app, BrowserWindow, session, shell, ipcMain, dialog } from "electron";
 import { spawn, ChildProcess } from "child_process";
 import { fileURLToPath } from "url";
+import { randomBytes } from "crypto";
+
 import path from "path";
 import fetch from "node-fetch";
-import { randomBytes } from "crypto";
 
 let mainWindow: BrowserWindow | null = null;
 let pythonProcess: ChildProcess | null = null;
@@ -84,24 +85,49 @@ async function createWindow() {
 }
 
 async function startPythonBackend() {
-  const backendPath = path.join(__dirname, "../../backend/main.py");
+  const backendDir = path.join(__dirname, "../../backend");
 
-  pythonProcess = spawn("python", [backendPath], {
+  const pythonPath = path.join(
+    backendDir,
+    "venv",
+    "Scripts",
+    "python.exe"
+  );
+
+  pythonProcess = spawn(
+  pythonPath,
+  [
+    "-m",
+    "uvicorn",
+    "main:app",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    String(PYTHON_PORT),
+    "--workers",
+    "1"
+  ],
+  {
+    cwd: backendDir,
     env: {
       ...process.env,
       PYTHON_TOKEN,
       PYTHON_PORT: String(PYTHON_PORT),
     },
     stdio: "inherit",
-  });
+  }
+);
+
+
 
   pythonProcess.on("exit", () => {
     pythonProcess = null;
   });
 
+  // Wait for backend
   for (let i = 0; i < 20; i++) {
     try {
-      const res = await fetch(`http://127.0.0.1:${PYTHON_PORT}/health`, {
+      const res = await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, {
         headers: { "x-token": PYTHON_TOKEN },
       });
       if (res.ok) return;
@@ -112,8 +138,8 @@ async function startPythonBackend() {
   throw new Error("Python backend failed to start");
 }
 
-// Secure IPC Bridge
 
+// Secure IPC Bridge FOR API request (Python)
 ipcMain.handle("ai:request", async (_event, payload) => {
   const { endpoint, method = "GET", body } = payload;
 
@@ -132,6 +158,18 @@ ipcMain.handle("ai:request", async (_event, payload) => {
   }
 
   return res.json();
+});
+
+ipcMain.handle("dialog:openFolder", async () => {
+  if (!mainWindow) return;
+
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Select File(s)",
+    properties: ["openDirectory", "multiSelections"],
+    filters: [{ name: "All Files", extensions: ["*"] }],
+  });
+
+  return result.filePaths;
 });
 
 // CLEAN UPs

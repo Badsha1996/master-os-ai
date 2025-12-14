@@ -1,7 +1,8 @@
 import { createRequire } from "node:module";
-import { BrowserWindow, app, ipcMain, session, shell } from "electron";
+import { BrowserWindow, app, dialog, ipcMain, session, shell } from "electron";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
+import { randomBytes } from "crypto";
 import path from "path";
 import http from "node:http";
 import https from "node:https";
@@ -12,7 +13,6 @@ import { deprecate, promisify, types } from "node:util";
 import { format } from "node:url";
 import { isIP } from "node:net";
 import { createReadStream, promises } from "node:fs";
-import { randomBytes } from "crypto";
 
 //#region rolldown:runtime
 var __create = Object.create;
@@ -5232,7 +5232,19 @@ async function createWindow() {
 	await startPythonBackend();
 }
 async function startPythonBackend() {
-	pythonProcess = spawn("python", [path.join(__dirname, "../../backend/main.py")], {
+	const backendDir = path.join(__dirname, "../../backend");
+	pythonProcess = spawn(path.join(backendDir, "venv", "Scripts", "python.exe"), [
+		"-m",
+		"uvicorn",
+		"main:app",
+		"--host",
+		"127.0.0.1",
+		"--port",
+		String(PYTHON_PORT),
+		"--workers",
+		"1"
+	], {
+		cwd: backendDir,
 		env: {
 			...process.env,
 			PYTHON_TOKEN,
@@ -5245,7 +5257,7 @@ async function startPythonBackend() {
 	});
 	for (let i$1 = 0; i$1 < 20; i$1++) {
 		try {
-			if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/health`, { headers: { "x-token": PYTHON_TOKEN } })).ok) return;
+			if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, { headers: { "x-token": PYTHON_TOKEN } })).ok) return;
 		} catch {}
 		await new Promise((r$1) => setTimeout(r$1, 300));
 	}
@@ -5266,6 +5278,17 @@ ipcMain.handle("ai:request", async (_event, payload) => {
 		throw new Error(`Python error ${res.status}: ${text}`);
 	}
 	return res.json();
+});
+ipcMain.handle("dialog:openFolder", async () => {
+	if (!mainWindow) return;
+	return (await dialog.showOpenDialog(mainWindow, {
+		title: "Select File(s)",
+		properties: ["openDirectory", "multiSelections"],
+		filters: [{
+			name: "All Files",
+			extensions: ["*"]
+		}]
+	})).filePaths;
 });
 app.on("before-quit", () => {
 	if (pythonProcess) pythonProcess.kill();
