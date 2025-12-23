@@ -4,27 +4,50 @@ import { ref } from 'vue'
 interface chatMessageType {
   human: string
   ai: string
+  loading?: boolean
 }
 
-const initialAIMessage: string = 'Hey! How can i Help you today'
+// API Related Types
+interface aiResponseType {
+  response: string
+}
+
+const aiOutput: string = 'Hey! How can i Help you today'
 const userInput = ref<string>('')
-const chatMessagesList = ref<chatMessageType[]>([{ human: userInput.value, ai: initialAIMessage }])
+const chatMessagesList = ref<chatMessageType[]>([{ human: userInput.value, ai: aiOutput }])
 
 // ************************************ HANDLERS / UTILITY FUNCTIONS ************************************
-const handleInput = (): void => {
+const handleInput = async (): Promise<void> => {
+  const aiResponse: aiResponseType = await window.electronAPI.invoke('ai:request', {
+    endpoint: '/api/llm/text-to-text',
+    method: 'POST',
+    body: { text: userInput.value },
+  })
+
   const chatMessage: chatMessageType = {
     human: userInput.value,
-    ai: 'Nice, I will get back to you',
+    ai: aiResponse.response,
+    loading: true,
   }
+
   chatMessagesList.value.push(chatMessage)
   userInput.value = ''
+
+  setTimeout(() => {
+    const index = chatMessagesList.value.indexOf(chatMessage)
+
+    chatMessagesList.value[index] = {
+      ...chatMessage,
+      loading: false,
+    }
+  }, 0)
 }
 </script>
 
 <template>
   <div class="flex flex-col h-screen bg-gray-100">
     <main class="flex-1 overflow-y-auto p-4 space-y-4">
-      <div v-for="chatMessage in chatMessagesList" :key="chatMessage.ai">
+      <div v-for="(chatMessage, index) in chatMessagesList" :key="index">
         <div class="flex items-end justify-end" v-if="chatMessage.human != ''">
           <div class="bg-blue-600 text-white p-3 rounded-lg rounded-br-none shadow-sm max-w-xs">
             <p class="text-sm">{{ chatMessage.human }}</p>
@@ -32,7 +55,8 @@ const handleInput = (): void => {
         </div>
         <div class="flex items-end">
           <div class="bg-white text-gray-800 p-3 rounded-lg rounded-bl-none shadow-sm max-w-xs">
-            <p class="text-sm">{{ chatMessage.ai }}</p>
+            <p class="text-sm" v-if="chatMessage.loading">thinking...</p>
+            <p class="text-sm" v-else>{{ chatMessage.ai }}</p>
           </div>
         </div>
       </div>
@@ -43,11 +67,13 @@ const handleInput = (): void => {
         <input
           type="text"
           v-model="userInput"
+          @keyup.enter="handleInput"
           placeholder="Type your message..."
           class="flex-1 border border-gray-300 rounded-full px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
         <button
           @click="handleInput"
+          @keyup.enter="handleInput"
           class="bg-blue-600 text-white p-2 rounded-full hover:bg-blue-700 transition"
         >
           <svg

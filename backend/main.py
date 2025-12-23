@@ -2,6 +2,7 @@ import os
 from fastapi import FastAPI, Header, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from routes.file_system import file_router
+from routes.llm_response import llm_router
 import uvicorn
 
 EXPECTED_TOKEN = "54321"
@@ -24,6 +25,7 @@ def health(_: str = Header(..., alias="x-token")):
 All Routers 
 '''
 app.include_router(file_router, prefix="/api", dependencies=[Depends(verify_token)])
+app.include_router(llm_router, prefix="/api", dependencies=[Depends(verify_token)])
 
 if __name__ == "__main__":
     uvicorn.run(
