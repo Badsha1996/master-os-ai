@@ -57,8 +57,8 @@ def text_to_text(req: LLMRequest) -> JSONResponse:
             temperature=0.7,
         )
                
-        raw_content = output['choices'][0]['message']['content']
-        content_dict = json.loads(raw_content)
+        raw_content = output['choices'][0]['message']['content'] #type: ignore
+        content_dict = json.loads(raw_content) #type: ignore
         final_answer = content_dict['answer']
         return JSONResponse(status_code=200, content={"response" : final_answer}) 
 
@@ -68,3 +68,41 @@ def text_to_text(req: LLMRequest) -> JSONResponse:
             status_code=500,
             content={"error": str(e)},
         )
+    
+
+class LLMClient:
+    def __init__(self, llm):
+        self.llm = llm
+
+    async def react(self, prompt: str) -> str:
+        output = self.llm.create_chat_completion(
+            messages=[
+                {
+                "role": "system",
+                "content": (
+                    "You are a ReAct agent.\n"
+                    "You MUST respond in strict JSON.\n\n"
+                    "FORMAT:\n"
+                    "{\n"
+                    '  "thought": "string",\n'
+                    '  "action": {\n'
+                    '    "name": "tool_name | finish",\n'
+                    '    "input": "string"\n'
+                    "  }\n"
+                    "}\n\n"
+                    "Rules:\n"
+                    "- thought MUST be a string\n"
+                    "- action MUST be an object\n"
+                    "- NEVER return arrays\n"
+                    "- NEVER return plain strings\n"
+                    "- NO explanations outside JSON"
+                ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+        )
+
+        return output["choices"][0]["message"]["content"]
+
+llm_client = LLMClient(llm)
