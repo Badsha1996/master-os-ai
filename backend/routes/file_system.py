@@ -126,6 +126,7 @@ manager = WatcherManager()
 def start_watching(req: FolderRequest) -> JSONResponse:
     watcher_id = manager.start_watcher(req.path)
     return JSONResponse(
+        status_code=200,
         content={
             "status": "watching started",
             "watcher_id": watcher_id,

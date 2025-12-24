@@ -1,5 +1,7 @@
-<style setup lang="ts"></style>
+<script setup lang="ts">
+import ChatInterface from '@/components/chatInterface/index.vue'
+</script>
 
 <template>
-  <div>home page</div>
+  <ChatInterface />
 </template>
