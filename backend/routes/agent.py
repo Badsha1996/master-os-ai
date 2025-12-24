@@ -1,19 +1,19 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 from agent.core import AgentCore
-from routes.llm_client import llm_client
-from tools.basic import echo, add_numbers
+from tools.tools import tools
+from llm.llm_client import llm_client
 
-agent_router = APIRouter(prefix="/agent", tags=["Agent"])
-
+'''
+Req and Res models
+'''
 class AgentRequest(BaseModel):
     task: str
 
-tools = {
-    "echo": echo,
-    "add_numbers": add_numbers,
-}
-
+'''
+Router and Endpoints 
+'''
+agent_router : APIRouter = APIRouter(prefix="/agent", tags=["Agent"])
 agent = AgentCore(llm_client, tools)
 
 @agent_router.post("/run")

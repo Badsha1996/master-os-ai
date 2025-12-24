@@ -2,7 +2,7 @@ import os
 from fastapi import FastAPI, Header, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from routes.file_system import file_router
-from routes.llm_client import llm_router
+from routes.chat import chat_router
 from routes.agent import agent_router
 import uvicorn
 
@@ -26,7 +26,7 @@ def health(_: str = Header(..., alias="x-token")):
 All Routers 
 '''
 app.include_router(file_router, prefix="/api", dependencies=[Depends(verify_token)])
-app.include_router(llm_router, prefix="/api", dependencies=[Depends(verify_token)])
+app.include_router(chat_router, prefix="/api", dependencies=[Depends(verify_token)])
 app.include_router(agent_router, prefix="/api", dependencies=[Depends(verify_token)])
 
 if __name__ == "__main__":
