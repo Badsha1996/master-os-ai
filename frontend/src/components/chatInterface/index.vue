@@ -17,27 +17,27 @@ const userInput = ref<string>('')
 const chatMessagesList = ref<chatMessageType[]>([{ human: userInput.value, ai: aiOutput }])
 
 // ************************************ HANDLERS / UTILITY FUNCTIONS ************************************
-const handleInput = async (): Promise<void> => {
-  const aiResponse: aiResponseType = await window.electronAPI.invoke('ai:request', {
-    endpoint: '/api/llm/text-to-text',
-    method: 'POST',
-    body: { text: userInput.value },
-  })
-
+const handleInput = (): void => {
   const chatMessage: chatMessageType = {
     human: userInput.value,
-    ai: aiResponse.response,
+    ai: '',
     loading: true,
   }
 
   chatMessagesList.value.push(chatMessage)
   userInput.value = ''
 
-  setTimeout(() => {
+  setTimeout(async () => {
     const index = chatMessagesList.value.indexOf(chatMessage)
+    const aiResponse: aiResponseType = await window.electronAPI.invoke('ai:request', {
+      endpoint: '/api/llm/text-to-text',
+      method: 'POST',
+      body: { text: userInput.value },
+    })
 
     chatMessagesList.value[index] = {
       ...chatMessage,
+      ai: aiResponse.response,
       loading: false,
     }
   }, 0)
@@ -67,14 +67,16 @@ const handleInput = async (): Promise<void> => {
         <input
           type="text"
           v-model="userInput"
+          :disabled="chatMessagesList.some((msg) => msg.loading)"
           @keyup.enter="handleInput"
           placeholder="Type your message..."
           class="flex-1 border border-gray-300 rounded-full px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
         <button
           @click="handleInput"
+          :disabled="!userInput.trim() || chatMessagesList.some((msg) => msg.loading)"
           @keyup.enter="handleInput"
-          class="bg-blue-600 text-white p-2 rounded-full hover:bg-blue-700 transition"
+          class="bg-blue-600 text-white p-2 rounded-full hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"

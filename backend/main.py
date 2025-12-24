@@ -2,7 +2,7 @@ import os
 from fastapi import FastAPI, Header, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from routes.file_system import file_router
-from routes.llm_response import llm_router
+from routes.llm_client import llm_router
 import uvicorn
 
 EXPECTED_TOKEN = "54321"
