@@ -28,9 +28,16 @@ def text_to_text(req: ChatInput) -> JSONResponse:
     try:
         logger.info(f"CHAT request received: {MODEL_PATH}...") 
         output = llm(
-            f"# You are MOS-AI. You can answer eveything with max precision. USER REQUEST :  {req.text} ", 
-            temperature=0.3,
-            stop=["Q:", "\n"], # Stop generating just before the model would generate a new question
+           prompt = (
+                "You are a helpful AI assistant.\n"
+                "Answer the question fully and clearly.\n"
+                "Do NOT stop mid-sentence.\n\n"
+                f"Question: {req.text}\n"
+                "Answer:"
+            ), 
+            temperature=0.0,
+            max_tokens=512,
+            stop=["Question:", "\n"], # Stop generating just before the model would generate a new question
             echo=False # Echo the prompt back in the output
         )
 
