@@ -12,7 +12,7 @@ class AgentCore:
     def __init__(self, llm_client, tools: Dict[str, Any]):
         self.llm = llm_client
         self.tools = tools
-        self.max_steps = 10   # hard cap
+        self.max_steps = 10   
 
     async def run(self, task: str) -> Dict[str, Any]:
         history: List[Dict[str, Any]] = []
@@ -58,7 +58,7 @@ class AgentCore:
 
             logger.info(f"[OBSERVATION] {observation}")
 
-            # 🔒 AUTO-FINISH RULE
+            # AUTO-FINISH RULE
             if observation and isinstance(observation, str):
                 if step >= 1:
                     return {
