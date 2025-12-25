@@ -1,7 +1,7 @@
 from pathlib import Path
 from llama_cpp import Llama
 
-BASE_DIR = Path(__file__).resolve().parent  # backend/
+BASE_DIR = Path(__file__).resolve().parent  
 MODEL_PATH = BASE_DIR / "models" / "mistral-7b-instruct-v0.2.Q4_K_S.gguf"
 
 if not MODEL_PATH.exists():
