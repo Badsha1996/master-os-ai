@@ -1,6 +1,7 @@
 import json
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
+from llm.llm_client import LLMClient
 
 '''
 Logger and logging
@@ -14,62 +15,55 @@ class AgentError(Exception):
     pass
 
 class AgentCore:
-    def __init__(self, llm_client, tools: Dict[str, Any]):
+    def __init__(self, llm_client: LLMClient, tools: Dict[str, Any]):
         self.llm = llm_client
         self.tools = tools
-        self.max_steps = 10  
+        self.max_steps = 10
 
     async def run(self, task: str) -> Dict[str, Any]:
         history: List[Dict[str, Any]] = []
-        
-        logger.info(f"[AGENT START] Task: {task}")
+        logger.info(f"🚀 [START] Task: {task}")
 
         for step in range(self.max_steps):
-            logger.info(f"[STEP {step + 1}/{self.max_steps}]")
+            logger.info(f"🔄 [STEP {step + 1}/{self.max_steps}] Thinking...")
 
             prompt = self._build_prompt(task, history)
-            
-            try:
-                response = await self.llm.react(prompt)
-                thought, action = self._parse_response(response)
-            except Exception as e:
-                logger.error(f"[LLM ERROR] {e}")
-                return {
-                    "success": False,
-                    "error": f"LLM failed: {str(e)}",
-                    "steps": history,
-                }
-
-            logger.info(f"[THOUGHT] {thought}")
-            logger.info(f"[ACTION] {action}")
-
-            action["name"] = self._sanitize_action_name(action["name"])
-            valid_names = set(self.tools.keys()) | {"finish"}
-
-            if action["name"] not in valid_names:
-                logger.warning(f"[INVALID ACTION] {action['name']}")
-                observation = f"ERROR: Invalid action '{action['name']}'. Valid: {list(valid_names)}"
-                history.append({
-                    "thought": thought,
-                    "action": action,
-                    "observation": observation,
-                })
-                continue
-
-            if action["name"] == "finish":
-                logger.info(f"[FINISH] {action.get('input', '')}")
-                return {
-                    "success": True,
-                    "result": action.get("input", ""),
-                    "steps": history,
-                }
 
             try:
-                observation = self.tools[action["name"]](action["input"])
-                logger.info(f"[OBSERVATION] {observation}")
+                response_str = await self.llm.react(prompt)
+                thought, action = self._parse_response(response_str)
+                
+                logger.info(f"🧠 [THOUGHT] {thought}")
+                logger.info(f"⚡ [ACTION] {action['name']}({action['input']})")
+
+                action_name = self._sanitize_action_name(action["name"])
+                
+                if action_name == "finish":
+                    result = action.get("input", "Task completed.")
+                    logger.info(f"✅ [DONE] {result}")
+                    return {
+                        "success": True,
+                        "result": result,
+                        "steps": history
+                    }
+
+                if action_name not in self.tools:
+                    raise ValueError(f"Unknown tool: '{action_name}'. Available: {list(self.tools.keys())}")
+
+                tool_func = self.tools[action_name]
+                try:
+                    observation = tool_func(action["input"])
+                except Exception as tool_err:
+                    observation = f"Tool Execution Error: {str(tool_err)}"
+                    logger.error(f"🛠️ [TOOL FAIL] {observation}")
+
+                logger.info(f"👀 [OBSERVATION] {str(observation)[:100]}...")
+
             except Exception as e:
-                observation = f"ERROR: Tool execution failed - {str(e)}"
-                logger.error(f"[TOOL ERROR] {e}")
+                logger.error(f"⚠️ [ERROR] {e}")
+                thought = "Error occurred during execution."
+                action = {"name": "error", "input": str(e)}
+                observation = f"System Error: {str(e)}"
 
             history.append({
                 "thought": thought,
@@ -77,82 +71,80 @@ class AgentCore:
                 "observation": observation,
             })
 
-        logger.warning("[MAX STEPS] Agent terminated")
+        logger.warning("🛑 [STOP] Max steps exceeded.")
         return {
             "success": False,
             "error": "Max steps exceeded",
-            "steps": history,
-            "partial_result": history[-1]["observation"] if history else None
+            "steps": history
         }
 
     def _build_prompt(self, task: str, history: List[Dict[str, Any]]) -> str:
-        """ReAct prompt - optimized for Mistral-7B"""
-        tools_list = ", ".join(self.tools.keys())
+        tools_desc = "\n".join(
+            [f"- {name}: {func.__doc__ or 'No description'}" for name, func in self.tools.items()]
+        )
+
         history_text = ""
+        for i, step in enumerate(history[-3:]):
+            obs = str(step.get('observation', ''))
+            
+            if len(obs) > 500:
+                obs = obs[:500] + "... (truncated)"
+            
+            history_text += (
+                f"\nStep {i+1}:\n"
+                f"Thought: {step.get('thought', '')}\n"
+                f"Action: {json.dumps(step.get('action', {}))}\n"
+                f"Observation: {obs}\n"
+            )
 
-        if history:
-            for i, step in enumerate(history[-3:]):  
-                history_text += f"\nStep {i+1}:\n"
-                history_text += f"Thought: {step['thought']}\n"
-                history_text += f"Action: {step['action']}\n"
-                history_text += f"Observation: {step['observation']}\n"
-        
-        return f"""You are a ReAct agent. Complete this task step-by-step.
-                    Task: {task}
-                    Available tools: {tools_list}
-                    Rules:
-                    1. Respond ONLY with valid JSON
-                    2. Use format: {{"thought": "reasoning", "action": {{"name": "tool_name", "input": "argument"}}}}
-                    3. To finish, use: {{"thought": "final reasoning", "action": {{"name": "finish", "input": "final answer"}}}}
-                    4. NEVER ask questions - decide and act
+        return f"""
+            You are a precise reasoning agent.
+            Task: {task}
 
-                    Previous steps:{history_text if history_text else " None"}
+            Available Tools:
+            {tools_desc}
+            - finish: Call this with the final answer when done.
 
-                    What's your next action? Return JSON only."""
+            Instructions:
+            1. Analyze the history and previous observations.
+            2. Decide the next logical step.
+            3. OUTPUT ONLY JSON. Format:
+            {{
+            "thought": "short reasoning here",
+            "action": {{ "name": "tool_name", "input": "value" }}
+            }}
 
-    def _parse_response(self, response: str):
+            History:
+            {history_text or "No steps taken yet."}
+
+            Next Step JSON:
+            """
+
+    def _parse_response(self, response: str) -> Tuple[str, Dict[str, Any]]:
         try:
             data = json.loads(response)
+            thought = data.get("thought", "No thought provided")
+            action = data.get("action")
 
-            thought = data.get("thought", "")
-            if not isinstance(thought, str) or not thought.strip():
-                thought = "No thought provided"
-
-            action = data.get("action", {})
-            if not isinstance(action, dict):
-                raise ValueError("action must be an object")
+            if not action or not isinstance(action, dict):
+                if "tool_name" in data:
+                    action = {"name": data["tool_name"], "input": data.get("tool_input", "")}
+                else:
+                    raise ValueError("Missing 'action' object in JSON")
 
             if "name" not in action:
-                raise ValueError("action.name is required")
-
-            action.setdefault("input", "")
+                raise ValueError("Action missing 'name' field")
+            
+            if "input" not in action:
+                action["input"] = ""
 
             return thought, action
 
         except Exception as e:
-            raise AgentError(
-                f"Invalid JSON response.\n"
-                f"Response: {response[:500]}\n"
-                f"Error: {e}"
-            )
-        
+            raise ValueError(f"Failed to parse LLM response: {e}")
+
     def _sanitize_action_name(self, name: str) -> str:
         name = name.strip().lower()
-
-        if "|" in name:
-            parts = [p.strip() for p in name.split("|")]
-            if "finish" in parts:
-                return "finish"
-            for p in parts:
-                if p in self.tools:
-                    return p
-        
-        if name in self.tools or name == "finish":
-            return name
-            
-        for tool_name in self.tools:
-            if tool_name.lower() in name or name in tool_name.lower():
-                return tool_name
-                
+        if ":" in name: 
+            name = name.split(":")[-1]
         return name
-

@@ -1,2 +1,10 @@
 [target.x86_64-pc-windows-msvc]
+linker = "lld-link.exe"
+# "crt-static" is disabled by default, but explicit is fine.
+# Note: If you want a truly portable EXE that doesn't need MSVC runtime installed,
+# change this to "target-feature=+crt-static".
 rustflags = ["-C", "target-feature=-crt-static"]
+
+[build]
+# Speeds up compilation
+rustflags = ["-Z", "threads=8"]
