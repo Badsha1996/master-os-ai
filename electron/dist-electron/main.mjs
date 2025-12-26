@@ -5184,12 +5184,30 @@ function fixResponseChunkedTransferBadEnding(request, errorCallback) {
 //#region src/main.ts
 let mainWindow = null;
 let pythonProcess = null;
+let rustProcess = null;
 const PYTHON_TOKEN = "54321";
 const PYTHON_PORT = 8e3;
+const RUST_PORT = 5005;
 const CSP_NONCE = randomBytes(16).toString("base64");
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+async function setupSessionSecurity() {
+	const styleSrc = !app.isPackaged ? "'self' 'unsafe-inline'" : `'self' 'nonce-${CSP_NONCE}'`;
+	session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+		callback({ responseHeaders: {
+			...details.responseHeaders,
+			"Content-Security-Policy": [
+				"default-src 'self'",
+				"script-src 'self'",
+				`style-src ${styleSrc}`,
+				"img-src 'self' data:",
+				`connect-src 'self' http://127.0.0.1:${PYTHON_PORT} http://127.0.0.1:${RUST_PORT}`
+			].join("; ")
+		} });
+	});
+}
 async function createWindow() {
+	await setupSessionSecurity();
 	mainWindow = new BrowserWindow({
 		width: 1200,
 		height: 800,
@@ -5201,97 +5219,80 @@ async function createWindow() {
 			sandbox: true
 		}
 	});
-	mainWindow.once("ready-to-show", () => {
-		mainWindow?.show();
-	});
+	mainWindow.once("ready-to-show", () => mainWindow?.show());
 	mainWindow.webContents.setWindowOpenHandler(({ url }) => {
 		shell.openExternal(url);
 		return { action: "deny" };
-	});
-	const styleSrc = !app.isPackaged ? "'self' 'unsafe-inline'" : `'self' 'nonce-${CSP_NONCE}'`;
-	session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-		callback({ responseHeaders: {
-			...details.responseHeaders,
-			"Content-Security-Policy": [
-				"default-src 'self'",
-				"script-src 'self'",
-				`style-src ${styleSrc}`,
-				"img-src 'self' data:",
-				`connect-src 'self' http://127.0.0.1:${PYTHON_PORT}`
-			].join("; ")
-		} });
 	});
 	if (process.env.NODE_ENV === "development") await mainWindow.loadURL("http://localhost:5173");
 	else if (process.env.VITE_DEV_SERVER_URL) await mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
 	else await mainWindow.loadFile(path.join(__dirname, "../frontend/dist/index.html"));
 	mainWindow.webContents.on("dom-ready", () => {
-		mainWindow?.webContents.executeJavaScript(`
-      window.__CSP_NONCE__ = "${CSP_NONCE}";
-    `);
+		mainWindow?.webContents.executeJavaScript(`window.__CSP_NONCE__ = "${CSP_NONCE}";`);
 	});
-	await startPythonBackend();
+	await startSidecars();
 }
-async function startPythonBackend() {
+async function startSidecars() {
 	const backendDir = path.join(__dirname, "../../backend");
-	pythonProcess = spawn(path.join(backendDir, "venv", "Scripts", "python.exe"), [
+	const rustDir = path.join(__dirname, "../../rust");
+	const pythonPath = path.join(backendDir, "venv", "Scripts", "python.exe");
+	rustProcess = spawn(path.join(rustDir, "target/release/rust-llm-sidecar.exe"), [], {
+		cwd: rustDir,
+		stdio: "inherit",
+		env: {
+			...process.env,
+			PORT: String(RUST_PORT)
+		}
+	});
+	pythonProcess = spawn(pythonPath, [
 		"-m",
 		"uvicorn",
 		"main:app",
 		"--host",
 		"127.0.0.1",
 		"--port",
-		String(PYTHON_PORT),
-		"--workers",
-		"1"
+		String(PYTHON_PORT)
 	], {
 		cwd: backendDir,
 		env: {
 			...process.env,
 			PYTHON_TOKEN,
-			PYTHON_PORT: String(PYTHON_PORT)
+			RUST_URL: `http://127.0.0.1:${RUST_PORT}`
 		},
 		stdio: "inherit"
 	});
-	pythonProcess.on("exit", () => {
-		pythonProcess = null;
-	});
-	for (let i$1 = 0; i$1 < 20; i$1++) {
+	for (let i$1 = 0; i$1 < 15; i$1++) {
 		try {
 			if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, { headers: { "x-token": PYTHON_TOKEN } })).ok) return;
 		} catch {}
-		await new Promise((r$1) => setTimeout(r$1, 300));
+		await new Promise((r$1) => setTimeout(r$1, 500));
 	}
-	throw new Error("Python backend failed to start");
 }
 ipcMain.handle("ai:request", async (_event, payload) => {
-	const { endpoint, method = "GET", body } = payload;
-	const res = await fetch(`http://127.0.0.1:${PYTHON_PORT}${endpoint}`, {
-		method,
-		headers: {
-			"Content-Type": "application/json",
-			"x-token": PYTHON_TOKEN
-		},
-		body: body ? JSON.stringify(body) : void 0
-	});
-	if (!res.ok) {
-		const text = await res.text();
-		throw new Error(`Python error ${res.status}: ${text}`);
+	const { target = "python", endpoint, method = "POST", body } = payload;
+	const port = target === "rust" ? RUST_PORT : PYTHON_PORT;
+	try {
+		const res = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
+			method,
+			headers: {
+				"Content-Type": "application/json",
+				"x-token": PYTHON_TOKEN
+			},
+			body: body ? JSON.stringify(body) : void 0
+		});
+		if (!res.ok) throw new Error(`Backend error: ${res.statusText}`);
+		return await res.json();
+	} catch (error) {
+		console.error("IPC AI Request Failed:", error);
+		return { error };
 	}
-	return res.json();
 });
 ipcMain.handle("dialog:openFolder", async () => {
-	if (!mainWindow) return;
-	return (await dialog.showOpenDialog(mainWindow, {
-		title: "Select File(s)",
-		properties: ["openDirectory", "multiSelections"],
-		filters: [{
-			name: "All Files",
-			extensions: ["*"]
-		}]
-	})).filePaths;
+	return (await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory", "multiSelections"] })).filePaths;
 });
 app.on("before-quit", () => {
-	if (pythonProcess) pythonProcess.kill();
+	pythonProcess?.kill();
+	rustProcess?.kill();
 });
 app.whenReady().then(createWindow);
 

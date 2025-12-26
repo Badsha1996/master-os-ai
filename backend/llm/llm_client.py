@@ -1,35 +1,38 @@
-import json
 import re
-from setup import llm
-from prompts.react_prompt import SYSTEM_PROMPT
+import httpx
+import os
 
 class LLMClient:
-    def __init__(self, llm):
-        self.llm = llm
+    def __init__(self):
+        self.rust_url = os.getenv("RUST_URL", "http://127.0.0.1:5005")
 
     async def react(self, prompt: str) -> str:
-        output = self.llm.create_chat_completion(
-            messages=[
-                {
-                    "role": "system",
-                    "content": (SYSTEM_PROMPT),
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,               
-            stop=["<|im_start|>", "<|im_end|>"], 
-        )
+        payload = {
+            "prompt": prompt,
+            "max_tokens": 1024,
+            "temperature": 0.0,
+            "stop": ["<|im_start|>", "<|im_end|>", "Observation:"]
+        }
 
-        raw = output["choices"][0]["message"]["content"]
-        return self._extract_json(raw)
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            try:
+                response = await client.post(f"{self.rust_url}/predict", json=payload)
+                response.raise_for_status()
+                
+                data = response.json()
+                raw_content = data.get("text", "")
+                
+                return self._extract_json(raw_content)
+                
+            except httpx.HTTPError as e:
+                raise ConnectionError(f"Rust sidecar unreachable: {e}")
 
     def _extract_json(self, text: str) -> str:
-        """
-        Extract the FIRST JSON object from model output.
-        """
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if not match:
-            raise ValueError(f"No JSON object found:\n{text}")
+            if text.strip().startswith("{"): return text.strip()
+            raise ValueError(f"No JSON object found in Rust response:\n{text}")
         return match.group(0)
 
-llm_client = LLMClient(llm)
+
+llm_client = LLMClient()

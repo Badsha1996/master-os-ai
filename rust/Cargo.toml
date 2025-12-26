@@ -1,0 +1,18 @@
+[package]
+name = "rust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+llama-cpp-2 = { version = "0.1.130", default-features = false }
+anyhow = "1.0"
+serde_json = "1.0"
+
+[features]
+# This line is the fix: it tells Cargo that if you call --features vulkan,
+# it should enable the 'vulkan' feature inside the llama-cpp-2 crate.
+vulkan = ["llama-cpp-2/vulkan"]
+cuda = ["llama-cpp-2/cuda"]

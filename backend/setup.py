@@ -11,12 +11,11 @@ if not MODEL_PATH.exists():
 llm = Llama(
     model_path=str(MODEL_PATH),
     n_ctx=4096,
-    n_gpu_layers=28, 
+    n_gpu_layers=35,
+    n_batch=256,
     n_threads=8,
-    n_batch=512,
-    verbose=False,
     seed=42,
-    chat_format="chatml"
+    chat_format="chatml",
+    verbose=False,
+    use_gpu=True
 )
-
-
