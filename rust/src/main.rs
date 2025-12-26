@@ -4,7 +4,7 @@ use llama_cpp_2::{
     llama_backend::LlamaBackend,
     llama_batch::LlamaBatch,
     model::params::LlamaModelParams,
-    model::{AddBos, LlamaModel, Special}, 
+    model::{AddBos, LlamaModel, Special},
 };
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU32;
@@ -25,26 +25,96 @@ struct PredictResponse {
 
 struct AppState {
     model: LlamaModel,
-    backend: LlamaBackend,
+}
+
+#[derive(Debug)]
+enum GpuBackend {
+    Cuda,
+    Cpu,
+}
+
+impl GpuBackend {
+    fn name(&self) -> &str {
+        match self {
+            Self::Cuda => "CUDA (NVIDIA)",
+            Self::Cpu => "CPU",
+        }
+    }
+}
+
+fn try_load_model(
+    backend: &LlamaBackend,
+    model_path: &PathBuf,
+    gpu_layers: u32,
+    gpu_backend: &GpuBackend,
+) -> Result<LlamaModel, Box<dyn std::error::Error>> {
+    println!("🔍 Trying {} with {} GPU layers...", gpu_backend.name(), gpu_layers);
+    
+    let params = LlamaModelParams::default().with_n_gpu_layers(gpu_layers);
+    
+    match LlamaModel::load_from_file(backend, model_path, &params) {
+        Ok(model) => {
+            println!("✅ Successfully loaded with {}", gpu_backend.name());
+            Ok(model)
+        }
+        Err(e) => {
+            println!("❌ {} failed: {}", gpu_backend.name(), e);
+            Err(Box::new(e))
+        }
+    }
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let backend = LlamaBackend::init()?;
+    println!("🚀 Initializing AI Sidecar with intelligent GPU detection...\n");
     
-    // Performance logic: Use CUDA if the feature is enabled
-    let is_cuda_enabled = cfg!(feature = "cuda");
-    let model_params = LlamaModelParams::default()
-        .with_n_gpu_layers(if is_cuda_enabled { 999 } else { 0 });
-
+    let backend = LlamaBackend::init()?;
     let model_path = PathBuf::from("models/mistral-7b-instruct-v0.2.Q4_K_S.gguf");
     
-    println!("Hardware check: CUDA is {}", if is_cuda_enabled { "ENABLED 🚀" } else { "DISABLED 🐢" });
-
-    let model = LlamaModel::load_from_file(&backend, &model_path, &model_params)
-        .map_err(|e| anyhow::anyhow!("Model Load Fail: {}", e))?;
-
-    let state = Arc::new(AppState { model, backend });
+    // Check which GPU backends are compiled
+    let has_cuda = cfg!(feature = "cuda");
+    
+    println!("📦 Compiled features:");
+    println!("   CUDA: {}", if has_cuda { "✅" } else { "❌" });
+    println!();
+    
+    // Try loading with different backends in order of preference
+    let mut fallback_chain: Vec<(GpuBackend, u32)> = Vec::new();
+    
+    // Strategy: Try CUDA with full offload first, then partial, then CPU
+    if has_cuda {
+        fallback_chain.push((GpuBackend::Cuda, 999)); 
+        fallback_chain.push((GpuBackend::Cuda, 35));  
+        fallback_chain.push((GpuBackend::Cuda, 24));
+    }
+    
+    // Always have CPU as final fallback
+    fallback_chain.push((GpuBackend::Cpu, 0));
+    
+    let mut model = None;
+    let mut used_backend = None;
+    
+    for (backend_type, layers) in fallback_chain {
+        match try_load_model(&backend, &model_path, layers, &backend_type) {
+            Ok(loaded_model) => {
+                model = Some(loaded_model);
+                used_backend = Some((backend_type, layers));
+                break;
+            }
+            Err(_) => continue,
+        }
+    }
+    
+    let model = model.ok_or_else(|| anyhow::anyhow!("Failed to load model with any backend!"))?;
+    let (backend_type, layers) = used_backend.unwrap();
+    
+    println!("\n🎯 Final Configuration:");
+    println!("   Backend: {}", backend_type.name());
+    println!("   GPU Layers: {}", layers);
+    println!("   Performance: {}", if layers > 0 { "🚀 ACCELERATED" } else { "🐢 CPU-ONLY" });
+    println!();
+    
+    let state = Arc::new(AppState { model });
 
     let app = Router::new()
         .route("/predict", post(handle_predict))
@@ -55,13 +125,17 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
     Ok(())
 }
+
 async fn handle_predict(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<PredictRequest>,
 ) -> Json<PredictResponse> {
-    let n_ctx = 2048;
+    let n_ctx = 4096;
     let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx));
-    let mut ctx = state.model.new_context(&state.backend, ctx_params).expect("Ctx error");
+    
+    // Create a new backend for this request (backends are lightweight)
+    let backend = LlamaBackend::init().expect("Backend init error");
+    let mut ctx = state.model.new_context(&backend, ctx_params).expect("Ctx error");
 
     let tokens = state.model.str_to_token(&payload.prompt, AddBos::Always).expect("Token error");
     let mut batch = LlamaBatch::new(n_ctx as usize, 1);
@@ -82,7 +156,6 @@ async fn handle_predict(
 
         if token == state.model.token_eos() { break; }
 
-        // Provide size (32 is typically sufficient for most tokens) and Special::Tokenize
         let piece = state.model.token_to_str_with_size(token, 32, Special::Tokenize).unwrap_or_default();
         generated_text.push_str(&piece);
 
