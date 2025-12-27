@@ -9,6 +9,8 @@ tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 anyhow = "1.0"
 serde_json = "1.0"
+futures = "0.3"
+tokio-stream = "0.1"
 
 # Note: "cuda" feature forces strict linking. 
 # Ensure CUDA drivers are present on the target machine, 

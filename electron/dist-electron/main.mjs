@@ -5236,7 +5236,16 @@ async function startSidecars() {
 	const backendDir = path.join(__dirname, "../../backend");
 	const rustDir = path.join(__dirname, "../../rust");
 	const pythonPath = path.join(backendDir, "venv", "Scripts", "python.exe");
-	rustProcess = spawn(path.join(rustDir, "target/release/rust-llm-sidecar.exe"), [], {
+	const rustExe = path.join(rustDir, "target/release/rust-llm-sidecar.exe");
+	console.log("Rust directory:", rustDir);
+	console.log("Looking for Rust executable at:", rustExe);
+	if (!__require("fs").existsSync(rustExe)) {
+		console.error("ERROR: Rust executable not found at:", rustExe);
+		dialog.showErrorBox("Rust Sidecar Missing", `rust-llm-sidecar.exe not found at:\n${rustExe}\n\nPlease build it first.`);
+		app.quit();
+		return;
+	}
+	rustProcess = spawn(rustExe, [], {
 		cwd: rustDir,
 		stdio: "inherit",
 		env: {
@@ -5284,6 +5293,32 @@ ipcMain.handle("ai:request", async (_event, payload) => {
 		return await res.json();
 	} catch (error) {
 		console.error("IPC AI Request Failed:", error);
+		return { error };
+	}
+});
+ipcMain.handle("ai:request-stream", async (event, payload) => {
+	const { endpoint, method = "POST", body } = payload;
+	try {
+		const response = await fetch(`http://127.0.0.1:${PYTHON_PORT}${endpoint}`, {
+			method,
+			headers: {
+				"Content-Type": "application/json",
+				"x-token": PYTHON_TOKEN
+			},
+			body: JSON.stringify(body)
+		});
+		if (!response.ok) throw new Error(`Backend error: ${response.statusText}`);
+		if (response.body) {
+			response.body.on("data", (chunk) => {
+				event.sender.send("ai:stream-data", chunk.toString());
+			});
+			response.body.on("end", () => {
+				event.sender.send("ai:stream-end");
+			});
+		}
+		return { success: true };
+	} catch (error) {
+		console.error("Streaming failed:", error);
 		return { error };
 	}
 });

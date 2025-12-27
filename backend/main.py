@@ -1,6 +1,8 @@
 import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Depends
 from fastapi.responses import JSONResponse
+from llm.llm_client import llm_client
 from routes.file_system import file_router
 from routes.chat import chat_router
 from routes.agent import agent_router
@@ -10,8 +12,16 @@ EXPECTED_TOKEN = "54321"
 PORT = int(os.environ.get("PYTHON_PORT", "8000"))
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await llm_client.load_model()
+    yield
+    await llm_client.unload_model()
+
+
 app = FastAPI(title="Master OS Worker", 
-              description="Python should only act as SENCES(eyes + ears + voice)")
+              description="Python should only act as SENCES(eyes + ears + voice)",
+              lifespan=lifespan)
 
 def verify_token(x_token: str = Header(...)):
     if x_token != EXPECTED_TOKEN:

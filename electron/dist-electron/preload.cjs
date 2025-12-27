@@ -1,22 +1,109 @@
 let electron = require("electron");
 
 //#region src/preload.ts
+const allowedOnChannels = [
+	"ai:response",
+	"ai:status",
+	"ai:stream-data",
+	"ai:stream-end"
+];
 const allowedInvokeChannels = [
 	"ai:request",
+	"ai:request-stream",
 	"ai:cancel",
 	"dialog:openFolder"
 ];
-electron.contextBridge.exposeInMainWorld("electronAPI", {
+const electronAPI = {
 	invoke: (channel, data) => {
 		if (!allowedInvokeChannels.includes(channel)) throw new Error("Invalid IPC invoke channel");
 		return electron.ipcRenderer.invoke(channel, data);
 	},
 	on: (channel, callback) => {
-		if (!["ai:response", "ai:status"].includes(channel)) throw new Error("Invalid IPC on channel");
+		if (!allowedOnChannels.includes(channel)) throw new Error("Invalid IPC on channel");
 		const listener = (_, data) => callback(data);
 		electron.ipcRenderer.on(channel, listener);
 		return () => electron.ipcRenderer.removeListener(channel, listener);
-	}
-});
+	},
+	agent: {
+		run: (task) => electron.ipcRenderer.invoke("ai:request", {
+			endpoint: "/api/agent/run",
+			method: "POST",
+			body: { task }
+		}),
+		loadModel: (gpuLayers = 99) => electron.ipcRenderer.invoke("ai:request", {
+			endpoint: "/api/agent/llm/load",
+			method: "POST",
+			body: { gpu_layers: gpuLayers }
+		}),
+		unloadModel: () => electron.ipcRenderer.invoke("ai:request", {
+			endpoint: "/api/agent/llm/unload",
+			method: "POST"
+		}),
+		checkHealth: () => electron.ipcRenderer.invoke("ai:request", {
+			endpoint: "/api/agent/llm/health",
+			method: "GET"
+		}),
+		getMetrics: () => electron.ipcRenderer.invoke("ai:request", {
+			endpoint: "/api/agent/llm/metrics",
+			method: "GET"
+		}),
+		getStatus: () => electron.ipcRenderer.invoke("ai:request", {
+			endpoint: "/api/agent/llm/status",
+			method: "GET"
+		}),
+		predict: (prompt, maxTokens = 1024, temperature = .1) => electron.ipcRenderer.invoke("ai:request", {
+			endpoint: "/api/agent/llm/predict",
+			method: "POST",
+			body: {
+				prompt,
+				max_tokens: maxTokens,
+				temperature
+			}
+		}),
+		initialize: (gpuLayers = 99, coldStart = true) => electron.ipcRenderer.invoke("ai:request", {
+			endpoint: "/api/agent/llm/initialize",
+			method: "POST",
+			body: {
+				gpu_layers: gpuLayers,
+				cold_start: coldStart
+			}
+		})
+	},
+	chat: {
+		sendMessage: (text, temperature = .7, maxTokens = 512) => electron.ipcRenderer.invoke("ai:request", {
+			endpoint: "/api/chat/text-to-text",
+			method: "POST",
+			body: {
+				text,
+				temperature,
+				max_tokens: maxTokens
+			}
+		}),
+		stream: async (text, temperature = .7, maxTokens = 512, onChunk) => {
+			if (onChunk) {
+				const removeListener = electronAPI.on("ai:stream-data", onChunk);
+				try {
+					await electron.ipcRenderer.invoke("ai:request-stream", {
+						endpoint: "/api/chat/stream",
+						method: "POST",
+						body: {
+							text,
+							temperature,
+							max_tokens: maxTokens
+						}
+					});
+				} finally {
+					removeListener();
+				}
+			}
+		},
+		getStatus: () => electron.ipcRenderer.invoke("ai:request", {
+			endpoint: "/api/chat/status",
+			method: "GET"
+		})
+	},
+	files: { openFolder: () => electron.ipcRenderer.invoke("dialog:openFolder") }
+};
+electron.contextBridge.exposeInMainWorld("electronAPI", electronAPI);
 
 //#endregion

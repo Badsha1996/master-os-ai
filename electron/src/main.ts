@@ -86,7 +86,24 @@ async function startSidecars() {
   const backendDir = path.join(__dirname, "../../backend");
   const rustDir = path.join(__dirname, "../../rust");
   const pythonPath = path.join(backendDir, "venv", "Scripts", "python.exe");
-  const rustExe = path.join(rustDir, "target/release/rust-llm-sidecar.exe");
+  // const rustExe = path.join(rustDir, "target/release/rust.exe"); // umcomment this for prod build
+  const rustExe = path.join(rustDir, "target/debug/rust.exe");
+
+  // DEBUG: Log the paths
+  console.log("Rust directory:", rustDir);
+  console.log("Looking for Rust executable at:", rustExe);
+
+  // Check if file exists
+  const fs = require("fs");
+  if (!fs.existsSync(rustExe)) {
+    console.error("ERROR: Rust executable not found at:", rustExe);
+    dialog.showErrorBox(
+      "Rust Sidecar Missing",
+      `rust-llm-sidecar.exe not found at:\n${rustExe}\n\nPlease build it first.`
+    );
+    app.quit();
+    return;
+  }
 
   // 1. Start Rust
   rustProcess = spawn(rustExe, [], {
@@ -153,7 +170,70 @@ ipcMain.handle("ai:request", async (_event, payload) => {
   }
 });
 
-// Other handlers
+ipcMain.handle("ai:request-stream", async (event, payload) => {
+  const { endpoint, method = "POST", body } = payload;
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${PYTHON_PORT}${endpoint}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        "x-token": PYTHON_TOKEN,
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) throw new Error(`Backend error: ${response.statusText}`);
+
+    if (!response.body) throw new Error("Response body is empty");
+
+    let buffer = "";
+
+    return new Promise((resolve, reject) => {
+      response.body!.on("data", (chunk: Buffer) => {
+        buffer += chunk.toString();
+
+        // Parse SSE events
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || ""; // Keep incomplete line
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const data = line.substring(6).trim();
+            if (data) {
+              try {
+                const parsed = JSON.parse(data);
+                event.sender.send("ai:stream-data", parsed);
+
+                if (parsed.done) {
+                  event.sender.send("ai:stream-end");
+                }
+              } catch (e) {
+                console.error("Failed to parse SSE data:", e);
+              }
+            }
+          }
+        }
+      });
+
+      response.body!.on("end", () => {
+        resolve({ success: true });
+      });
+
+      response.body!.on("error", (err: Error) => {
+        reject(err);
+      });
+    });
+
+    return { success: true };
+  } catch (error) {
+    console.error("Streaming failed:", error);
+    event.sender.send("ai:stream-error", { error: error });
+    return { error: error };
+  }
+});
+
 ipcMain.handle("dialog:openFolder", async () => {
   const result = await dialog.showOpenDialog(mainWindow!, {
     properties: ["openDirectory", "multiSelections"],
