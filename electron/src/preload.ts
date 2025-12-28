@@ -3,9 +3,9 @@ import { contextBridge, ipcRenderer } from "electron";
 const allowedOnChannels = [
   "ai:response",
   "ai:status",
-  "ai:stream-data", // Existing
-  "ai:stream-end", // Existing
-  "ai:stream-error", // ADD THIS - Fixes the Invalid IPC error
+  "ai:stream-data", 
+  "ai:stream-end", 
+  "ai:stream-error", 
 ];
 
 const allowedInvokeChannels = [
@@ -56,7 +56,6 @@ export interface ElectronAPI {
   // File System API
   files: {
     openFolder: () => Promise<string[]>;
-    // Add other file operations as needed
   };
   removeAllStreamListeners: {};
 }

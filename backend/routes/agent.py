@@ -54,15 +54,8 @@ Router and Endpoints
 agent_router: APIRouter = APIRouter(prefix="/agent", tags=["Agent"])
 agent = AgentCore(llm_client, tools)
 
-# ===== Agent Endpoints =====
-
 @agent_router.post("/run")
 async def run_agent(req: AgentRequest):
-    """
-    Execute an agent task using the ReAct pattern.
-    
-    The agent will iteratively think, act, and observe until the task is complete.
-    """
     if not req.task or not req.task.strip():
         raise HTTPException(status_code=400, detail="Task cannot be empty")
     
@@ -78,22 +71,12 @@ async def run_agent(req: AgentRequest):
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
 
-# ===== LLM Management Endpoints =====
-
 @agent_router.post("/llm/load", response_model=LoadResponse)
 async def load_llm_model(req: LoadModelRequest = LoadModelRequest()):
-    """
-    Load the LLM model into memory.
-    
-    - **gpu_layers**: Number of layers to offload to GPU (99 = all layers, 0 = CPU only)
-    
-    Returns acceleration type (GPU/CPU) and load status.
-    """
     try:
         logger.info(f"[API] Loading model with {req.gpu_layers} GPU layers...")
         result = await llm_client.load_model(gpu_layers=req.gpu_layers)
         
-        # Emoji for UI toaster
         emoji = "🚀" if result["acceleration"] == "GPU" else "🐢"
         logger.info(f"[API] {emoji} Model loaded: {result['acceleration']}")
         
@@ -105,14 +88,8 @@ async def load_llm_model(req: LoadModelRequest = LoadModelRequest()):
             detail=f"Failed to load model: {str(e)}"
         )
 
-
 @agent_router.post("/llm/unload")
 async def unload_llm_model():
-    """
-    Unload the LLM model from memory to free resources.
-    
-    Returns unload status.
-    """
     try:
         logger.info("[API] Unloading model...")
         result = await llm_client.unload_model()
@@ -125,17 +102,8 @@ async def unload_llm_model():
             detail=f"Failed to unload model: {str(e)}"
         )
 
-
 @agent_router.get("/llm/health", response_model=HealthResponse)
 async def check_llm_health():
-    """
-    Check LLM server health and model status.
-    
-    Returns:
-    - Server status (healthy/unhealthy)
-    - Whether model is loaded
-    - Acceleration type (GPU/CPU/None)
-    """
     try:
         health = await llm_client.health_check()
         return HealthResponse(**health)
@@ -146,19 +114,8 @@ async def check_llm_health():
             detail=f"LLM server unavailable: {str(e)}"
         )
 
-
 @agent_router.get("/llm/metrics", response_model=MetricsResponse)
 async def get_llm_metrics():
-    """
-    Get LLM usage metrics and statistics.
-    
-    Returns:
-    - Total requests processed
-    - Total tokens generated
-    - Total time spent (ms)
-    - Average tokens per request
-    - Average time per request (ms)
-    """
     try:
         metrics = await llm_client.get_metrics()
         return MetricsResponse(**metrics)
@@ -169,23 +126,13 @@ async def get_llm_metrics():
             detail=f"Failed to retrieve metrics: {str(e)}"
         )
 
-
 @agent_router.get("/llm/status")
 async def get_llm_status():
-    """
-    Get current LLM client status (local state).
-    
-    Returns:
-    - Whether model is loaded (client-side tracking)
-    - Acceleration type
-    - GPU layers count
-    """
     return {
         "is_loaded": llm_client.is_loaded,
         "acceleration": llm_client.acceleration_type.value if llm_client.acceleration_type else "None",
         "gpu_layers": llm_client.gpu_layers
     }
-
 
 @agent_router.post("/llm/predict")
 async def predict_direct(req: PredictRequest):
@@ -216,22 +163,11 @@ async def predict_direct(req: PredictRequest):
             detail=f"Prediction failed: {str(e)}"
         )
 
-
-# ===== Initialization Endpoint =====
-
 @agent_router.post("/llm/initialize")
 async def initialize_llm(
     gpu_layers: int = 99,
     cold_start: bool = True
 ):
-    """
-    Initialize the LLM client.
-    
-    - **gpu_layers**: Number of GPU layers to use
-    - **cold_start**: If True, loads model immediately. If False, defers to first use.
-    
-    This is useful for app startup to control initialization behavior.
-    """
     try:
         logger.info(f"[API] Initializing LLM (cold_start={cold_start}, gpu_layers={gpu_layers})...")
         result = await llm_client.initialize(gpu_layers=gpu_layers, cold_start=cold_start)
@@ -251,7 +187,6 @@ async def initialize_llm(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Initialization failed: {str(e)}"
         )
-
 
 @agent_router.get("/health")
 async def api_health():

@@ -167,14 +167,13 @@ const fetchWithTimeout = async (url: string, options: any, timeout = 5000) => {
 const checkHealth = async () => {
   for (let i = 0; i < 20; i++) {
     try {
-      // Use the internal port directly here
       const res = await fetch(`http://127.0.0.1:${PYTHON_PORT}/chat/status`);
       if (res.ok) {
         console.log("✅ AI Services Online");
         return true;
       }
     } catch (e) {
-      // ignore connection errors during warmup
+      
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
@@ -192,7 +191,6 @@ ipcMain.handle("ai:request", async (_event, payload) => {
   const port = target === "rust" ? RUST_PORT : PYTHON_PORT;
 
   try {
-    // Increased timeout for predictions (60s), short for status (5s)
     const isPrediction =
       endpoint.includes("predict") || endpoint.includes("run");
     const isAgent = endpoint.includes("/agent/");
@@ -219,7 +217,7 @@ ipcMain.handle("ai:request", async (_event, payload) => {
   }
 });
 
-// 3. Updated Streaming Handler (Robust Parsing)
+
 ipcMain.handle("ai:request-stream", async (event, payload) => {
   const { endpoint, method = "POST", body } = payload;
 
@@ -237,17 +235,11 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
     if (!response.ok) throw new Error(`Backend error: ${response.statusText}`);
     if (!response.body) throw new Error("Response body is empty");
 
-    // Robust SSE Parsing Logic
+    
     let buffer = "";
-
-    // main.ts
     response.body.on("data", (chunk) => {
       buffer += chunk.toString();
-
-      // Split by the SSE double newline
       let parts = buffer.split("\n\n");
-
-      // The last part might be incomplete, keep it in buffer
       buffer = parts.pop() || "";
 
       for (const part of parts) {
@@ -257,13 +249,11 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
         const dataStr = line.slice(6);
         try {
           const parsed = JSON.parse(dataStr);
-          // SEND IMMEDIATELY TO VUE
           event.sender.send("ai:stream-data", {
             text: parsed.content || parsed.text || "",
             done: parsed.done || false,
           });
         } catch (e) {
-          // Fallback for non-json
           event.sender.send("ai:stream-data", { text: dataStr });
         }
       }

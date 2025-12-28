@@ -20,8 +20,6 @@ class AgentCore:
         self.tools = tools
         self.max_steps = 10
 
-    # In agent/core.py
-
     async def run(self, task: str) -> Dict[str, Any]:
         history: List[Dict[str, Any]] = []
         logger.info(f"🚀 [START] Task: {task}")
@@ -41,12 +39,11 @@ class AgentCore:
                 action_name = self._sanitize_action_name(action["name"])
                 
                 if action_name == "finish":
-                    # ✅ FIX: Get the input or use the thought as result
                     result = action.get("input", "") or thought or "Task completed."
                     logger.info(f"✅ [DONE] {result}")
                     return {
                         "success": True,
-                        "result": result,  # This is what Vue reads!
+                        "result": result,  
                         "steps": history
                     }
 
@@ -75,7 +72,6 @@ class AgentCore:
                 "observation": observation,
             })
 
-        # ✅ FIX: Return better fallback message
         logger.warning("🛑 [STOP] Max steps exceeded.")
         last_step = history[-1] if history else None
         fallback_result = last_step.get("observation", "Max steps exceeded") if last_step else "No steps completed"
@@ -86,6 +82,7 @@ class AgentCore:
             "error": "Max steps exceeded",
             "steps": history
         }
+    
     def _build_prompt(self, task: str, history: List[Dict[str, Any]]) -> str:
         tools_desc = "\n".join(
             [f"- {name}: {func.__doc__ or 'No description'}" for name, func in self.tools.items()]
@@ -131,6 +128,7 @@ class AgentCore:
             {history_text or "No previous steps."}
 
             Your JSON response:"""
+    
     def _parse_response(self, response: str) -> Tuple[str, Dict[str, Any]]:
         try:
             data = json.loads(response)
