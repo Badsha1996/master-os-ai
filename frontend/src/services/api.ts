@@ -1,0 +1,276 @@
+import type {
+  AgentRunResponse,
+  LoadModelResponse,
+  HealthResponse,
+  MetricsResponse,
+  LLMStatusResponse,
+  PredictResponse,
+  InitializeResponse,
+  ChatResponse,
+  ChatStatusResponse,
+} from '../types/electron'
+
+class APIService {
+  private api = window.electronAPI
+
+  // **************************** AGENT API **************************
+  async runAgent(task: string): Promise<AgentRunResponse> {
+    return this.api.agent.run(task)
+  }
+
+  /**
+   * Load the LLM model with specified GPU layers
+   * @param gpuLayers - Number of layers to offload to GPU (99 = all, 0 = CPU only)
+   */
+  async loadModel(gpuLayers: number = 99): Promise<LoadModelResponse> {
+    return this.api.agent.loadModel(gpuLayers)
+  }
+
+  /**
+   * Unload the LLM model from memory
+   */
+  async unloadModel(): Promise<{ status: string }> {
+    return this.api.agent.unloadModel()
+  }
+
+  /**
+   * Check LLM health and model status
+   */
+  async checkLLMHealth(): Promise<HealthResponse> {
+    return this.api.agent.checkHealth()
+  }
+
+  /**
+   * Get LLM usage metrics and statistics
+   */
+  async getMetrics(): Promise<MetricsResponse> {
+    return this.api.agent.getMetrics()
+  }
+
+  /**
+   * Get current LLM client status (local state)
+   */
+  async getLLMStatus(): Promise<LLMStatusResponse> {
+    return this.api.agent.getStatus()
+  }
+
+  /**
+   * Direct prediction bypassing agent logic
+   */
+  async predictDirect(
+    prompt: string,
+    maxTokens: number = 1024,
+    temperature: number = 0.1,
+  ): Promise<PredictResponse> {
+    return this.api.agent.predict(prompt, maxTokens, temperature)
+  }
+
+  /**
+   * Initialize the LLM client
+   * @param gpuLayers - Number of GPU layers to use
+   * @param coldStart - If true, loads model immediately. If false, defers to first use.
+   */
+  async initializeLLM(
+    gpuLayers: number = 99,
+    coldStart: boolean = true,
+  ): Promise<InitializeResponse> {
+    return this.api.agent.initialize(gpuLayers, coldStart)
+  }
+
+  // ****************************** CHAT API ******************************
+
+  /**
+   * Send a chat message and receive a response
+   */
+  async sendChatMessage(
+    text: string,
+    temperature: number = 0.7,
+    maxTokens: number = 512,
+  ): Promise<ChatResponse> {
+    return this.api.chat.sendMessage(text, temperature, maxTokens)
+  }
+
+  /**
+   * Send a chat message with streaming response
+   */
+  async streamChatMessage(
+    text: string,
+    onChunk: (chunk: string) => void,
+    temperature: number = 0.7,
+    maxTokens: number = 512,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      // Set up listeners
+      const handleStreamData = (data: any) => {
+        try {
+          if (typeof data === 'string') {
+            // Handle SSE format
+            if (data.startsWith('data: ')) {
+              const jsonStr = data.substring(6).trim()
+              if (jsonStr) {
+                const parsed = JSON.parse(jsonStr)
+                if (parsed.type === 'chunk' && parsed.content) {
+                  onChunk(parsed.content)
+                } else if (parsed.type === 'done') {
+                  resolve()
+                } else if (parsed.type === 'error') {
+                  reject(new Error(parsed.content))
+                }
+              }
+            }
+          } else if (data?.content) {
+            onChunk(data.content)
+          }
+        } catch (e) {
+          console.error('Error processing stream data:', e)
+        }
+      }
+
+      const handleStreamError = (errorData: any) => {
+        reject(new Error(errorData?.error || 'Stream error'))
+      }
+
+      const handleStreamEnd = () => {
+        resolve()
+      }
+
+      const removeDataListener = window.electronAPI.on('ai:stream-data', handleStreamData)
+      const removeErrorListener = window.electronAPI.on('ai:stream-error', handleStreamError)
+      const removeEndListener = window.electronAPI.on('ai:stream-end', handleStreamEnd)
+
+      const cleanup = () => {
+        removeDataListener()
+        removeErrorListener()
+        removeEndListener()
+      }
+
+      this.api.chat.stream(text, temperature, maxTokens).then(cleanup).catch((err) => {
+        cleanup()
+        reject(err)
+      })
+    })
+  }
+
+  /**
+   * Get chat service status
+   */
+  async getChatStatus(): Promise<ChatStatusResponse> {
+    return this.api.chat.getStatus()
+  }
+
+  // **************************** FILE SYSTEM API ****************************
+
+  /**
+   * Open folder selection dialog
+   */
+  async openFolderDialog(): Promise<string[]> {
+    return this.api.files.openFolder()
+  }
+
+  // **************************** HEALTH CHECKS ****************************
+
+  /**
+   * overall system health
+   */
+  async checkSystemHealth(): Promise<{
+    chat: ChatStatusResponse
+    agent: LLMStatusResponse
+    overall: 'healthy' | 'degraded' | 'unhealthy'
+  }> {
+    try {
+      const [chatStatus, agentStatus] = await Promise.all([
+        this.getChatStatus(),
+        this.getLLMStatus(),
+      ])
+
+      const overall =
+        chatStatus.ready && agentStatus.is_loaded
+          ? 'healthy'
+          : chatStatus.ready || agentStatus.is_loaded
+            ? 'degraded'
+            : 'unhealthy'
+
+      return {
+        chat: chatStatus,
+        agent: agentStatus,
+        overall,
+      }
+    } catch (error) {
+      console.error('System health check failed:', error)
+      return {
+        chat: {
+          service: 'offline',
+          rust_server: 'unavailable',
+          model_loaded: false,
+          acceleration: 'None',
+          ready: false,
+          error: String(error),
+        },
+        agent: {
+          is_loaded: false,
+          acceleration: 'None',
+          gpu_layers: 0,
+        },
+        overall: 'unhealthy',
+      }
+    }
+  }
+
+  // ************************ UTILITY METHODS ************************
+
+  /**
+   * Auto-initialize system on startup
+   */
+  async autoInitialize(gpuLayers: number = 99): Promise<void> {
+    try {
+      console.log('Auto-initializing system...')
+      await this.initializeLLM(gpuLayers, false) // Defer loading
+      console.log('System initialized successfully')
+    } catch (error) {
+      console.error('Auto-initialization failed:', error)
+      throw error
+    }
+  }
+
+  /**
+   * Ensure model is loaded before operation
+   */
+  async ensureModelLoaded(gpuLayers: number = 99): Promise<void> {
+    const status = await this.getLLMStatus()
+    if (!status.is_loaded) {
+      console.log('Model not loaded, loading now...')
+      await this.loadModel(gpuLayers)
+    }
+  }
+
+  /**
+   * Get acceleration emoji
+   */
+  getAccelerationEmoji(acceleration: string): string {
+    switch (acceleration.toUpperCase()) {
+      case 'GPU':
+        return '🚀'
+      case 'CPU':
+        return '🐢'
+      default:
+        return '❓'
+    }
+  }
+
+  /**
+   * Format metrics for display
+   */
+  formatMetrics(metrics: MetricsResponse): Record<string, string> {
+    return {
+      'Total Requests': metrics.total_requests.toString(),
+      'Total Tokens': metrics.total_tokens_generated.toLocaleString(),
+      'Total Time': `${(metrics.total_time_ms / 1000).toFixed(2)}s`,
+      'Avg Tokens/Request': metrics.average_tokens_per_request.toFixed(2),
+      'Avg Time/Request': `${metrics.average_time_per_request_ms.toFixed(0)}ms`,
+      'Tokens/Second': ((metrics.total_tokens_generated / metrics.total_time_ms) * 1000).toFixed(2),
+    }
+  }
+}
+
+export const apiService = new APIService()
+export default APIService

@@ -9,11 +9,16 @@ tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 anyhow = "1.0"
 serde_json = "1.0"
+futures = "0.3"
+tokio-stream = "0.1"
 
 # Note: "cuda" feature forces strict linking. 
 # Ensure CUDA drivers are present on the target machine, 
 # even if you intend to fallback to CPU.
-llama-cpp-2 = { version = "0.1.130", features = ["cuda", "sampler"] }
+# you can use only CPU version by using below
+llama-cpp-2 = { version = "0.1.130",default-features = false,  features = [ "sampler"] }
+# GPU
+# llama-cpp-2 = { version = "0.1.130", features = ["cuda", "sampler"] }
 rand = "0.8" # Added this (Required for LlamaSampler::dist)
 
 # Tracing/Logging (Essential for Prod)
@@ -22,7 +27,7 @@ tracing-subscriber = "0.3"
 
 [features]
 # e.g., cargo build --no-default-features --features vulkan
-default = ["cuda"]
+# default = ["cuda"]
 vulkan = ["llama-cpp-2/vulkan"]
 cuda = ["llama-cpp-2/cuda"]
 metal = ["llama-cpp-2/metal"]

@@ -39,23 +39,24 @@ class AgentCore:
                 action_name = self._sanitize_action_name(action["name"])
                 
                 if action_name == "finish":
-                    result = action.get("input", "Task completed.")
+                    result = action.get("input", "") or thought or "Task completed."
                     logger.info(f"✅ [DONE] {result}")
                     return {
                         "success": True,
-                        "result": result,
+                        "result": result,  
                         "steps": history
                     }
 
                 if action_name not in self.tools:
-                    raise ValueError(f"Unknown tool: '{action_name}'. Available: {list(self.tools.keys())}")
-
-                tool_func = self.tools[action_name]
-                try:
-                    observation = tool_func(action["input"])
-                except Exception as tool_err:
-                    observation = f"Tool Execution Error: {str(tool_err)}"
-                    logger.error(f"🛠️ [TOOL FAIL] {observation}")
+                    observation = f"❌ Unknown tool: '{action_name}'. Available: {list(self.tools.keys())}"
+                    logger.warning(observation)
+                else:
+                    tool_func = self.tools[action_name]
+                    try:
+                        observation = tool_func(action["input"])
+                    except Exception as tool_err:
+                        observation = f"Tool Execution Error: {str(tool_err)}"
+                        logger.error(f"🛠️ [TOOL FAIL] {observation}")
 
                 logger.info(f"👀 [OBSERVATION] {str(observation)[:100]}...")
 
@@ -72,12 +73,16 @@ class AgentCore:
             })
 
         logger.warning("🛑 [STOP] Max steps exceeded.")
+        last_step = history[-1] if history else None
+        fallback_result = last_step.get("observation", "Max steps exceeded") if last_step else "No steps completed"
+        
         return {
             "success": False,
+            "result": fallback_result,
             "error": "Max steps exceeded",
             "steps": history
         }
-
+    
     def _build_prompt(self, task: str, history: List[Dict[str, Any]]) -> str:
         tools_desc = "\n".join(
             [f"- {name}: {func.__doc__ or 'No description'}" for name, func in self.tools.items()]
@@ -86,7 +91,6 @@ class AgentCore:
         history_text = ""
         for i, step in enumerate(history[-3:]):
             obs = str(step.get('observation', ''))
-            
             if len(obs) > 500:
                 obs = obs[:500] + "... (truncated)"
             
@@ -97,29 +101,34 @@ class AgentCore:
                 f"Observation: {obs}\n"
             )
 
-        return f"""
-            You are a precise reasoning agent.
+        return f"""You are a helpful AI assistant with access to tools.
             Task: {task}
 
             Available Tools:
             {tools_desc}
-            - finish: Call this with the final answer when done.
+            - finish: Use this when you have the final answer. Put the answer in the 'input' field.
 
-            Instructions:
-            1. Analyze the history and previous observations.
-            2. Decide the next logical step.
-            3. OUTPUT ONLY JSON. Format:
+            CRITICAL RULES:
+            1. For simple greetings/questions, use finish immediately with your response
+            2. Use tools only when needed for specific tasks
+            3. Always provide an answer in finish's input field
+            4. Output ONLY valid JSON, no extra text
+
+            JSON Format:
             {{
-            "thought": "short reasoning here",
-            "action": {{ "name": "tool_name", "input": "value" }}
+            "thought": "your reasoning",
+            "action": {{ "name": "tool_name", "input": "value or answer" }}
             }}
 
+            Examples:
+            - For "hi": {{"thought": "User is greeting me", "action": {{"name": "finish", "input": "Hello! How can I help you today?"}}}}
+            - For "2+2": {{"thought": "Need to calculate", "action": {{"name": "calculator", "input": "2+2"}}}}
+
             History:
-            {history_text or "No steps taken yet."}
+            {history_text or "No previous steps."}
 
-            Next Step JSON:
-            """
-
+            Your JSON response:"""
+    
     def _parse_response(self, response: str) -> Tuple[str, Dict[str, Any]]:
         try:
             data = json.loads(response)

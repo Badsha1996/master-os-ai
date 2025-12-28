@@ -4,8 +4,10 @@
   "description": "This is going to be an ambitious project",
   "private": true,
   "scripts": {
+    "dev": "npm run dev:rust:wait && npm run dev:without_rust",
+    "dev:rust:wait": "npm run dev:rust:background && wait-on tcp:5005",
+    "dev:rust:background": "cd rust && cargo watch -x run &",
     "dev:without_rust": "concurrently -n \"FRONTEND,BACKEND,ELECTRON\" -c \"green,blue,magenta\" \"npm run dev:frontend\" \"npm run dev:backend\" \"npm run dev:electron\"",
-    "dev": "concurrently -n \"FRONTEND,BACKEND,ELECTRON,RUST\" -c \"green,blue,magenta,yellow\" \"npm run dev:frontend\" \"npm run dev:backend\" \"npm run dev:electron\" \"npm run dev:rust\"",
     "dev:frontend": "cd frontend && npm run dev",
     "dev:backend": "cd backend && npm run dev",
     "dev:electron": "cd electron && npm run dev",
@@ -22,7 +24,8 @@
   "author": "Badsha Laskar",
   "license": "ISC",
   "devDependencies": {
-    "concurrently": "^9.2.1"
+    "concurrently": "^9.2.1",
+    "wait-on": "^9.0.3"
   },
   "dependencies": {
     "@rolldown/binding-win32-x64-msvc": "^1.0.0-beta.54"
