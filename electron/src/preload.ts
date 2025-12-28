@@ -58,8 +58,7 @@ export interface ElectronAPI {
     openFolder: () => Promise<string[]>;
     // Add other file operations as needed
   };
-
-  
+  removeAllStreamListeners: {};
 }
 
 const electronAPI: ElectronAPI = {
@@ -74,7 +73,7 @@ const electronAPI: ElectronAPI = {
     if (!allowedOnChannels.includes(channel)) {
       throw new Error(`Invalid IPC on channel: ${channel}`);
     }
-    const listener = (_event, data) => callback(data);
+    const listener = (_event: any, data?: any) => callback(data);
     ipcRenderer.on(channel, listener);
     return () => ipcRenderer.removeListener(channel, listener);
   },

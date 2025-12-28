@@ -26,19 +26,40 @@ export function useAI() {
     return `${acceleration.value} ${accelerationEmoji.value}`
   })
 
-  const isSystemReady = computed(() => chatReady.value && agentReady.value)
+  // FIX: Make system ready if EITHER chat OR agent is ready (not both)
+  const isSystemReady = computed(() => {
+    // If model is loaded and at least one service is ready
+    const ready = isModelLoaded.value && (chatReady.value || agentReady.value)
+    console.log('🔍 isSystemReady:', ready, '| chatReady:', chatReady.value, '| agentReady:', agentReady.value, '| isModelLoaded:', isModelLoaded.value)
+    return ready
+  })
+
+  const formattedMetrics = computed(() => {
+    if (!metrics.value) return null
+    return apiService.formatMetrics(metrics.value)
+  })
 
   // **************************** HELPERS / UTILITY FUNCTIONS ****************************
 
   async function refreshSystemHealth() {
     try {
-      isLoading.value = true
+      // Don't set loading during health checks - it causes UI flicker
       error.value = null
 
       const health = await apiService.checkSystemHealth()
 
+      console.log('📡 Health Response:', JSON.stringify(health, null, 2))
+
+      // Update states based on health check
       isModelLoaded.value = health.chat.model_loaded || health.agent.is_loaded
-      acceleration.value = (health.chat.acceleration || health.agent.acceleration) as any
+      
+      // Get acceleration from whichever service is loaded
+      if (health.chat.acceleration && health.chat.acceleration !== 'None') {
+        acceleration.value = health.chat.acceleration as any
+      } else if (health.agent.acceleration && health.agent.acceleration !== 'None') {
+        acceleration.value = health.agent.acceleration as any
+      }
+      
       gpuLayers.value = health.agent.gpu_layers
       chatReady.value = health.chat.ready
       agentReady.value = health.agent.is_loaded
@@ -46,10 +67,8 @@ export function useAI() {
       return health
     } catch (err) {
       error.value = String(err)
-      console.error('Failed to refresh system health:', err)
+      console.error('❌ Failed to refresh system health:', err)
       throw err
-    } finally {
-      isLoading.value = false
     }
   }
 
@@ -124,11 +143,6 @@ export function useAI() {
     }
   }
 
-  const formattedMetrics = computed(() => {
-    if (!metrics.value) return null
-    return apiService.formatMetrics(metrics.value)
-  })
-
   async function runAgent(task: string) {
     try {
       error.value = null
@@ -155,26 +169,18 @@ export function useAI() {
     }
   }
 
-  async function sendChatMessage(text: string, temperature: number = 0.7, maxTokens: number = 512) {
-    try {
-      error.value = null
-      return await apiService.sendChatMessage(text, temperature, maxTokens)
-    } catch (err) {
-      error.value = String(err)
-      console.error('Chat message failed:', err)
-      throw err
-    }
-  }
-
   const streamChatMessage = async (text: string, onChunk: (chunk: string) => void) => {
-    // 1. Clean up any stale listeners from previous crashes
+    // 1. Force cleanup
     window.electronAPI.removeAllStreamListeners()
 
     return new Promise<void>(async (resolve, reject) => {
-      // 2. Set up the "listeners"
       const removeData = window.electronAPI.on('ai:stream-data', (data) => {
-        // Rust usually sends chunks in a 'text' or 'content' field
+        // Handle standardized object from Electron Bridge
         if (data.text) onChunk(data.text)
+        if (data.done) {
+          cleanup()
+          resolve()
+        }
       })
 
       const removeError = window.electronAPI.on('ai:stream-error', (err) => {
@@ -193,13 +199,8 @@ export function useAI() {
         removeEnd()
       }
 
-      // 3. Actually tell the backend to start
       try {
-        const result = await window.electronAPI.chat.stream(text)
-        if (result && result.error) {
-          cleanup()
-          reject(new Error(result.error))
-        }
+        await window.electronAPI.chat.stream(text)
       } catch (e) {
         cleanup()
         reject(e)
@@ -208,12 +209,74 @@ export function useAI() {
   }
 
   let healthCheckInterval: ReturnType<typeof setInterval> | null = null
+  let readinessPoller: ReturnType<typeof setInterval> | null = null
 
   onMounted(async () => {
+    console.log('🚀 Initializing AI system...')
+    
+    // Initial health check
     await refreshSystemHealth()
+    
+    // Initialize if model not loaded
     if (!isModelLoaded.value) {
+      console.log('📦 Model not loaded, initializing...')
       await initialize(99, false)
+      // Wait a bit after init
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      await refreshSystemHealth()
     }
+
+    // SMARTER POLLING: Start with aggressive, then back off
+    if (!isSystemReady.value) {
+      console.log('⏳ System not ready yet, starting smart polling...')
+      
+      let pollCount = 0
+      const maxQuickPolls = 10 // Only poll aggressively for 5 seconds
+      
+      readinessPoller = setInterval(async () => {
+        await refreshSystemHealth()
+        pollCount++
+        
+        if (isSystemReady.value) {
+          console.log('✅ System is NOW READY!')
+          if (readinessPoller) {
+            clearInterval(readinessPoller)
+            readinessPoller = null
+          }
+        } else if (pollCount >= maxQuickPolls) {
+          // After 5 seconds of aggressive polling, slow down
+          console.log('⏱️ Slowing down polling, system taking longer than expected')
+          if (readinessPoller) {
+            clearInterval(readinessPoller)
+            readinessPoller = null
+          }
+          
+          // Switch to slower polling
+          readinessPoller = setInterval(async () => {
+            await refreshSystemHealth()
+            if (isSystemReady.value && readinessPoller) {
+              clearInterval(readinessPoller)
+              readinessPoller = null
+              console.log('✅ System ready (after extended wait)')
+            }
+          }, 3000) // Every 3 seconds
+        }
+      }, 500) // Check every 500ms for first 5 seconds
+
+      // Safety timeout after 30 seconds
+      setTimeout(() => {
+        if (!isSystemReady.value && readinessPoller) {
+          console.error('❌ System failed to become ready in 30 seconds')
+          clearInterval(readinessPoller)
+          readinessPoller = null
+          error.value = 'System initialization timeout. Backend may not be responding correctly.'
+        }
+      }, 30000)
+    } else {
+      console.log('✅ System already ready!')
+    }
+
+    // Start normal periodic health checks (every 30s)
     healthCheckInterval = setInterval(() => {
       refreshSystemHealth().catch(console.error)
     }, 30000)
@@ -222,6 +285,11 @@ export function useAI() {
   onUnmounted(() => {
     if (healthCheckInterval) {
       clearInterval(healthCheckInterval)
+      healthCheckInterval = null
+    }
+    if (readinessPoller) {
+      clearInterval(readinessPoller)
+      readinessPoller = null
     }
   })
 
@@ -251,7 +319,6 @@ export function useAI() {
     fetchMetrics,
     runAgent,
     predictDirect,
-    sendChatMessage,
     streamChatMessage,
   }
 }
@@ -263,7 +330,7 @@ export function useSimpleAI() {
   return {
     isReady: ai.isSystemReady,
     status: ai.systemStatus,
-    sendMessage: ai.sendChatMessage,
+    sendMessage: ai.streamChatMessage,
     runTask: ai.runAgent,
     error: ai.error,
   }

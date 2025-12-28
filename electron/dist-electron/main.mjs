@@ -5311,7 +5311,8 @@ ipcMain.handle("ai:request", async (_event, payload) => {
 	const { target = "python", endpoint, method = "POST", body } = payload;
 	const port = target === "rust" ? RUST_PORT : PYTHON_PORT;
 	try {
-		const timeout = endpoint.includes("predict") || endpoint.includes("run") ? 6e4 : 5e3;
+		const isPrediction = endpoint.includes("predict") || endpoint.includes("run");
+		const timeout = endpoint.includes("/agent/") ? 18e4 : isPrediction ? 6e4 : 5e3;
 		const res = await fetchWithTimeout(`http://127.0.0.1:${port}${endpoint}`, {
 			method,
 			headers: {

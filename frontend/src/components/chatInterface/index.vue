@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useAI } from '@/composables/useAI'
 import type { AgentStep } from '@/types/electron'
-import { ref } from 'vue'
+import { ref, nextTick } from 'vue'
 
 type Mode = 'chat' | 'agent'
 
@@ -11,21 +11,35 @@ interface ChatMessage {
   loading?: boolean
   steps?: AgentStep[]
   showSteps?: boolean
+  currentThinking?: string
   acceleration?: string
   tokensGenerated?: number
   timeMs?: number
 }
 
-// ***************************** Services and additonal calls **********************
+// ************************ SERVICES ************************
 const ai = useAI()
 
 // ************************ STATES ************************
 const mode = ref<Mode>('chat')
 const userInput = ref('')
-const chatMessagesList = ref<ChatMessage[]>([{ human: '', ai: 'Hey! How can I help you today?' }])
+const chatMessagesList = ref<ChatMessage[]>([
+  {
+    human: '',
+    ai: 'Hey! How can I help you today?',
+  },
+])
 const showSettings = ref(false)
 const showMetrics = ref(false)
-const useStreaming = ref(false)
+const messagesContainer = ref<HTMLElement | null>(null)
+
+// ************************ HELPERS ************************
+const scrollToBottom = async () => {
+  await nextTick()
+  if (messagesContainer.value) {
+    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+  }
+}
 
 // ************************ HANDLERS ************************
 const handleInput = async (): Promise<void> => {
@@ -37,85 +51,103 @@ const handleInput = async (): Promise<void> => {
     ai: '',
     loading: true,
     showSteps: false,
+    currentThinking: '',
   }
 
   chatMessagesList.value.push(message)
   userInput.value = ''
+  scrollToBottom()
 
-  const index = chatMessagesList.value.length - 1
+  const messageIndex = chatMessagesList.value.length - 1
 
   try {
     if (mode.value === 'chat') {
-      if (useStreaming.value) {
-        const messageIndex = chatMessagesList.value.length - 1
-
-        try {
-          await ai.streamChatMessage(text, (chunk) => {
-            // 2. Append directly to the object inside the array
-            // This ensures Vue's deep reactivity picks it up immediately
-            if (chatMessagesList.value[messageIndex]) {
-              chatMessagesList.value[messageIndex].ai += chunk
-              chatMessagesList.value[messageIndex].loading = false // Turn off loading on first chunk
-            }
-          })
-        } catch (error) {
-          console.error('Streaming failed:', error)
-          if (chatMessagesList.value[index]) {
-            chatMessagesList.value[index].ai = 'Error during streaming'
-            chatMessagesList.value[index].loading = false
-          }
+      // Chat mode - SSE streaming
+      await ai.streamChatMessage(text, (chunk) => {
+        if (chatMessagesList.value[messageIndex]) {
+          chatMessagesList.value[messageIndex].ai += chunk
+          chatMessagesList.value[messageIndex].loading = false
         }
-      } else {
-        const res = await ai.sendChatMessage(text)
-        if (chatMessagesList.value[index]) {
-          chatMessagesList.value[index] = {
-            ...message,
-            ai: res.response,
-            loading: false,
-            acceleration: res.acceleration,
-            tokensGenerated: res.tokens_generated,
-            timeMs: res.time_ms,
-          }
-        }
-      }
+        scrollToBottom()
+      })
     } else {
-      const res = await ai.runAgent(text)
-
-      let finalAnswer = res.result || ''
-
-      if (!finalAnswer && res.steps?.length) {
-        const finishStep = res.steps.find(
-          (step) => step.action.name === 'finish' || step.action.name === 'final_answer',
-        )
-        if (finishStep?.observation) {
-          finalAnswer = finishStep.observation
-        } else {
-          const lastStep = res.steps[res.steps.length - 1]
-          if (lastStep?.observation && lastStep.action.name !== 'finish') {
-            finalAnswer = lastStep.observation
-          }
+      // Agent mode - show live thinking process
+      const updateThinking = (thinking: string) => {
+        if (chatMessagesList.value[messageIndex]) {
+          chatMessagesList.value[messageIndex].currentThinking = thinking
         }
+        scrollToBottom()
       }
 
-      if (chatMessagesList.value[index]) {
-        chatMessagesList.value[index] = {
-          ...message,
-          ai: finalAnswer || 'No answer provided.',
-          steps: res.steps || [],
-          loading: false,
+      const updateSteps = (steps: AgentStep[]) => {
+        if (chatMessagesList.value[messageIndex]) {
+          chatMessagesList.value[messageIndex].steps = steps
         }
+        scrollToBottom()
+      }
+
+      // Simulated agent step updates (replace with actual API when available)
+      const pollInterval = setInterval(async () => {
+        // This is where you'd check agent status in real implementation
+        // For now, just update UI periodically
+      }, 500)
+
+      try {
+        updateThinking('Analyzing your request...')
+        const res = await ai.runAgent(text)
+
+        // ✅ Better result extraction
+        let finalAnswer = res.result || ''
+
+        // If no result, try to get from steps
+        if (!finalAnswer && res.steps?.length) {
+          const finishStep = res.steps.find(
+            (step) => step.action.name === 'finish' || step.action.name === 'final_answer',
+          )
+
+          if (finishStep) {
+            // Try input first, then observation, then thought
+            finalAnswer = finishStep.action.input || finishStep.observation || finishStep.thought
+          } else {
+            // Get last step's observation
+            const lastStep = res.steps[res.steps.length - 1]
+            finalAnswer = lastStep?.observation || 'Agent completed but provided no answer.'
+          }
+        }
+
+        // Final fallback
+        if (!finalAnswer || finalAnswer.trim() === '') {
+          finalAnswer =
+            "I processed your request but couldn't generate a proper response. Please try rephrasing."
+        }
+
+        if (chatMessagesList.value[messageIndex]) {
+          chatMessagesList.value[messageIndex] = {
+            ...message,
+            ai: finalAnswer,
+            steps: res.steps || [],
+            loading: false,
+            currentThinking: '',
+          }
+        }
+      } catch (err: any) {
+        clearInterval(pollInterval)
+        throw err
       }
     }
-  } catch (err) {
+  } catch (err: any) {
     console.error('Error:', err)
-    if (chatMessagesList.value[index]) {
-      chatMessagesList.value[index] = {
+    if (chatMessagesList.value[messageIndex]) {
+      chatMessagesList.value[messageIndex] = {
         ...message,
-        ai: ai.error.value || 'Something went wrong. Please try again.',
+        ai: err.message || 'Something went wrong. Please try again.',
         loading: false,
+        currentThinking: '',
       }
     }
   }
+
+  scrollToBottom()
 }
 
 const handleLoadModel = async (layers: number) => {
@@ -153,201 +185,216 @@ const handleFetchMetrics = async () => {
     alert('Failed to fetch metrics: ' + ai.error.value)
   }
 }
-
-const focusInput = (): void => {
-  const input = document.querySelector('input[type="text"]') as HTMLInputElement
-  input?.focus()
-}
 </script>
 
 <template>
-  <div class="flex flex-col h-screen bg-linear-to-br from-gray-50 to-gray-100 font-sans">
-    <!-- HEADER -->
-    <div class="flex gap-2 p-4 bg-white/80 backdrop-blur-sm border-b border-gray-200 shadow-sm">
-      <div class="flex-1 flex items-center gap-3">
-        <h1 class="text-lg font-bold text-gray-800">MOS-AI</h1>
-
-        <div class="flex items-center gap-2">
-          <div :class="['w-2 h-2 rounded-full', `bg-${ai.statusColor.value}-500`]"></div>
-          <span class="text-xs text-gray-600">{{ ai.systemStatus.value }}</span>
+  <div
+    class="flex flex-col h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white font-sans"
+  >
+    <!-- Header -->
+    <header
+      class="flex items-center justify-between px-6 py-4 bg-slate-800/50 backdrop-blur-xl border-b border-slate-700/50"
+    >
+      <div class="flex items-center gap-4">
+        <div class="flex items-center gap-3">
+          <div
+            class="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/20"
+          >
+            <span class="text-xl">✨</span>
+          </div>
+          <div>
+            <h1
+              class="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent"
+            >
+              MOS-AI
+            </h1>
+            <div class="flex items-center gap-2 mt-0.5">
+              <div
+                :class="[
+                  'w-1.5 h-1.5 rounded-full animate-pulse',
+                  ai.statusColor.value === 'green'
+                    ? 'bg-green-400'
+                    : ai.statusColor.value === 'yellow'
+                      ? 'bg-yellow-400'
+                      : 'bg-red-400',
+                ]"
+              />
+              <span class="text-xs text-slate-400">{{ ai.systemStatus.value }}</span>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div class="flex gap-2">
-        <button
-          @click="mode = 'chat'"
-          :class="[
-            mode === 'chat'
-              ? 'bg-linear-to-r from-blue-500 to-blue-600 text-white shadow-md'
-              : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50',
-            'px-4 py-2 rounded-lg font-medium transition-all',
-          ]"
-        >
-          Chat
-        </button>
-        <button
-          @click="mode = 'agent'"
-          :class="[
-            mode === 'agent'
-              ? 'bg-linear-to-r from-purple-500 to-purple-600 text-white shadow-md'
-              : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50',
-            'px-4 py-2 rounded-lg font-medium transition-all',
-          ]"
-        >
-          Agent
-        </button>
+      <div class="flex items-center gap-3">
+        <div class="flex gap-2 bg-slate-700/30 p-1 rounded-lg">
+          <button
+            @click="mode = 'chat'"
+            :class="[
+              'flex items-center gap-2 px-4 py-2 rounded-md font-medium text-sm transition-all',
+              mode === 'chat'
+                ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/30'
+                : 'text-slate-400 hover:text-white',
+            ]"
+          >
+            💬 Chat
+          </button>
+          <button
+            @click="mode = 'agent'"
+            :class="[
+              'flex items-center gap-2 px-4 py-2 rounded-md font-medium text-sm transition-all',
+              mode === 'agent'
+                ? 'bg-purple-500 text-white shadow-lg shadow-purple-500/30'
+                : 'text-slate-400 hover:text-white',
+            ]"
+          >
+            🤖 Agent
+          </button>
+        </div>
 
         <button
           @click="showSettings = !showSettings"
-          class="px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+          class="p-2.5 bg-slate-700/50 hover:bg-slate-700 rounded-lg transition-all"
         >
           ⚙️
         </button>
       </div>
-    </div>
+    </header>
 
-    <!-- SETTINGS -->
-    <div v-if="showSettings" class="bg-white border-b border-gray-200 p-4">
-      <div class="max-w-3xl mx-auto space-y-4">
-        <h3 class="font-semibold text-gray-800">System Controls</h3>
+    <!-- Settings Panel -->
+    <transition name="slide-down">
+      <div
+        v-if="showSettings"
+        class="bg-slate-800/80 backdrop-blur-xl border-b border-slate-700/50 p-6"
+      >
+        <div class="max-w-4xl mx-auto space-y-4">
+          <h3 class="font-semibold text-lg flex items-center gap-2">⚙️ System Controls</h3>
 
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
-          <button
-            @click="handleLoadModel(99)"
-            :disabled="ai.isLoading.value"
-            class="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50 text-sm"
-          >
-            🚀 Load GPU
-          </button>
-          <button
-            @click="handleLoadModel(0)"
-            :disabled="ai.isLoading.value"
-            class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 text-sm"
-          >
-            🐢 Load CPU
-          </button>
-          <button
-            @click="handleUnloadModel"
-            :disabled="ai.isLoading.value"
-            class="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 disabled:opacity-50 text-sm"
-          >
-            🔴 Unload
-          </button>
-          <button
-            @click="ai.refreshSystemHealth"
-            :disabled="ai.isLoading.value"
-            class="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 disabled:opacity-50 text-sm"
-          >
-            🔄 Refresh
-          </button>
-        </div>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <button
+              @click="handleLoadModel(99)"
+              :disabled="ai.isLoading.value"
+              class="flex items-center justify-center gap-2 px-4 py-3 bg-green-500/20 hover:bg-green-500/30 border border-green-500/30 text-green-400 rounded-lg transition-all disabled:opacity-50"
+            >
+              🚀 Load GPU
+            </button>
+            <button
+              @click="handleLoadModel(0)"
+              :disabled="ai.isLoading.value"
+              class="flex items-center justify-center gap-2 px-4 py-3 bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 text-blue-400 rounded-lg transition-all disabled:opacity-50"
+            >
+              🐢 Load CPU
+            </button>
+            <button
+              @click="handleUnloadModel"
+              :disabled="ai.isLoading.value"
+              class="flex items-center justify-center gap-2 px-4 py-3 bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 text-red-400 rounded-lg transition-all disabled:opacity-50"
+            >
+              🔴 Unload
+            </button>
+            <button
+              @click="ai.refreshSystemHealth"
+              :disabled="ai.isLoading.value"
+              class="flex items-center justify-center gap-2 px-4 py-3 bg-slate-600/50 hover:bg-slate-600 border border-slate-500/30 rounded-lg transition-all disabled:opacity-50"
+            >
+              🔄 Refresh
+            </button>
+          </div>
 
-        <div class="grid grid-cols-2 gap-2">
-          <button
-            @click="handleFetchMetrics"
-            class="px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 text-sm"
-          >
-            📊 View Metrics
-          </button>
-          <button
-            @click="handleTestDirect"
-            class="px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 text-sm"
-          >
-            🧪 Test Direct LLM
-          </button>
-        </div>
+          <div class="grid grid-cols-2 gap-3">
+            <button
+              @click="handleFetchMetrics"
+              class="flex items-center justify-center gap-2 px-4 py-3 bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/30 text-purple-400 rounded-lg transition-all"
+            >
+              📊 View Metrics
+            </button>
+            <button
+              @click="handleTestDirect"
+              class="flex items-center justify-center gap-2 px-4 py-3 bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/30 text-indigo-400 rounded-lg transition-all"
+            >
+              🧪 Test Direct LLM
+            </button>
+          </div>
 
-        <div class="flex items-center gap-2">
-          <input type="checkbox" v-model="useStreaming" id="streaming" class="rounded" />
-          <label for="streaming" class="text-sm text-gray-700">
-            Enable Streaming (Chat Mode Only)
-          </label>
-        </div>
-
-        <div
-          v-if="ai.error.value"
-          class="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700"
-        >
-          ⚠️ {{ ai.error.value }}
-        </div>
-      </div>
-    </div>
-
-    <!-- METRICS MODAL -->
-    <div
-      v-if="showMetrics && ai.formattedMetrics.value"
-      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
-      @click="showMetrics = false"
-    >
-      <div class="bg-white rounded-lg p-6 max-w-md w-full mx-4" @click.stop>
-        <h3 class="text-lg font-bold mb-4">📊 LLM Metrics</h3>
-        <div class="space-y-2 text-sm">
           <div
-            v-for="(value, key) in ai.formattedMetrics.value"
-            :key="key"
-            class="flex justify-between"
+            v-if="ai.error.value"
+            class="p-4 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm"
           >
-            <span class="text-gray-600">{{ key }}:</span>
-            <span class="font-semibold">{{ value }}</span>
+            ⚠️ {{ ai.error.value }}
           </div>
         </div>
-        <button
-          @click="showMetrics = false"
-          class="mt-4 w-full px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600"
-        >
-          Close
-        </button>
       </div>
-    </div>
+    </transition>
 
-    <!-- CHAT AREA -->
-    <main class="flex-1 overflow-y-auto p-4 md:p-6">
-      <div class="max-w-3xl mx-auto space-y-6">
-        <div v-for="(msg, index) in chatMessagesList" :key="index">
-          <div v-if="msg.human" class="flex justify-end mb-2">
+    <!-- Chat Area -->
+    <main ref="messagesContainer" class="flex-1 overflow-y-auto px-6 py-8">
+      <div class="max-w-4xl mx-auto space-y-6">
+        <div v-for="(msg, index) in chatMessagesList" :key="index" class="space-y-3">
+          <!-- User Message -->
+          <div v-if="msg.human" class="flex justify-end">
             <div
-              class="max-w-2xl bg-linear-to-r from-blue-500 to-blue-600 text-white p-4 rounded-2xl rounded-tr-none shadow-lg"
+              class="max-w-2xl bg-gradient-to-r from-blue-500 to-blue-600 px-5 py-3 rounded-2xl rounded-tr-sm shadow-lg"
             >
               <p class="text-sm leading-relaxed">{{ msg.human }}</p>
             </div>
           </div>
 
+          <!-- AI Response -->
           <div v-if="msg.human || !msg.human" class="flex gap-4">
             <div v-if="msg.human" class="flex-shrink-0">
               <div
-                class="w-10 h-10 bg-linear-to-br from-gray-100 to-gray-200 rounded-xl flex items-center justify-center"
+                class="w-10 h-10 bg-gradient-to-br from-slate-700 to-slate-600 rounded-xl flex items-center justify-center shadow-lg"
               >
-                {{ ai.accelerationEmoji.value }}
+                <span class="text-lg">{{ ai.accelerationEmoji.value }}</span>
               </div>
             </div>
 
             <div
               v-if="msg.human"
-              class="flex-1 max-w-2xl bg-white border border-gray-200 rounded-2xl rounded-tl-none shadow-sm p-4"
+              class="flex-1 max-w-2xl bg-slate-800/50 backdrop-blur-xl border border-slate-700/50 rounded-2xl rounded-tl-sm shadow-lg px-5 py-4"
             >
-              <div v-if="msg.loading" class="flex items-center gap-2">
-                <div class="w-2 h-2 bg-blue-500 rounded-full animate-bounce"></div>
+              <!-- Loading / Thinking State -->
+              <div v-if="msg.loading" class="space-y-3">
+                <div class="flex items-center gap-2">
+                  <div class="flex gap-1">
+                    <div class="w-2 h-2 bg-blue-400 rounded-full animate-bounce" />
+                    <div
+                      class="w-2 h-2 bg-blue-400 rounded-full animate-bounce"
+                      style="animation-delay: 150ms"
+                    />
+                    <div
+                      class="w-2 h-2 bg-blue-400 rounded-full animate-bounce"
+                      style="animation-delay: 300ms"
+                    />
+                  </div>
+                  <span class="text-sm text-slate-400 ml-2">
+                    {{ mode === 'agent' ? 'Agent Thinking...' : 'Thinking...' }}
+                  </span>
+                </div>
+
+                <!-- Live Thinking Display for Agent -->
                 <div
-                  class="w-2 h-2 bg-blue-500 rounded-full animate-bounce"
-                  style="animation-delay: 150ms"
-                ></div>
-                <div
-                  class="w-2 h-2 bg-blue-500 rounded-full animate-bounce"
-                  style="animation-delay: 300ms"
-                ></div>
-                <span class="text-sm text-gray-600 ml-2">Thinking...</span>
+                  v-if="msg.currentThinking && mode === 'agent'"
+                  class="mt-2 p-3 bg-purple-500/10 border border-purple-500/20 rounded-lg"
+                >
+                  <div class="flex items-start gap-2">
+                    <span class="text-purple-400 text-xs mt-0.5">🧠</span>
+                    <p class="text-xs text-purple-300 italic">{{ msg.currentThinking }}</p>
+                  </div>
+                </div>
               </div>
 
+              <!-- Response Content -->
               <div v-else>
-                <p class="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">
+                <p class="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap">
                   {{ msg.ai }}
                 </p>
 
+                <!-- Metrics -->
                 <div
                   v-if="msg.tokensGenerated || msg.timeMs"
-                  class="mt-3 pt-3 border-t border-gray-100"
+                  class="mt-3 pt-3 border-t border-slate-700/50"
                 >
-                  <div class="flex items-center gap-4 text-xs text-gray-500">
+                  <div class="flex items-center gap-4 text-xs text-slate-400">
                     <span v-if="msg.tokensGenerated">🔢 {{ msg.tokensGenerated }} tokens</span>
                     <span v-if="msg.timeMs">⏱️ {{ msg.timeMs }}ms</span>
                     <span v-if="msg.acceleration">
@@ -356,28 +403,48 @@ const focusInput = (): void => {
                   </div>
                 </div>
 
-                <div v-if="msg.steps?.length" class="mt-4 pt-4 border-t border-gray-100">
+                <!-- Agent Steps -->
+                <div v-if="msg.steps?.length" class="mt-4 pt-4 border-t border-slate-700/50">
                   <button
                     @click="msg.showSteps = !msg.showSteps"
-                    class="text-xs px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg"
+                    class="flex items-center gap-2 text-xs px-3 py-2 bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/30 rounded-lg transition-all"
                   >
-                    {{ msg.showSteps ? '▲ Hide' : '▼ Show' }} Reasoning Steps
+                    {{ msg.showSteps ? '▲' : '▼' }}
+                    {{ msg.showSteps ? 'Hide' : 'Show' }} Reasoning Steps ({{ msg.steps.length }})
                   </button>
 
-                  <div v-if="msg.showSteps" class="space-y-2 mt-3">
-                    <div
-                      v-for="(step, i) in msg.steps"
-                      :key="i"
-                      class="bg-gray-50 border rounded-lg p-3 text-xs"
-                    >
-                      <div class="font-semibold text-gray-700">Step {{ i + 1 }}</div>
-                      <div class="mt-1"><strong>Thought:</strong> {{ step.thought }}</div>
-                      <div>
-                        <strong>Action:</strong> {{ step.action.name }}({{ step.action.input }})
+                  <transition name="expand">
+                    <div v-if="msg.showSteps" class="space-y-2 mt-3">
+                      <div
+                        v-for="(step, i) in msg.steps"
+                        :key="i"
+                        class="bg-slate-900/50 border border-slate-700/50 rounded-lg p-4"
+                      >
+                        <div class="flex items-center gap-2 mb-2">
+                          <span class="font-semibold text-purple-400">Step {{ i + 1 }}</span>
+                          <span
+                            class="text-xs px-2 py-0.5 bg-purple-500/20 text-purple-300 rounded"
+                          >
+                            {{ step.action.name }}
+                          </span>
+                        </div>
+                        <div class="space-y-2 text-xs">
+                          <div class="flex gap-2">
+                            <span class="text-slate-500 font-medium min-w-[80px]">💭 Thought:</span>
+                            <span class="text-slate-300">{{ step.thought }}</span>
+                          </div>
+                          <div class="flex gap-2">
+                            <span class="text-slate-500 font-medium min-w-[80px]">⚡ Input:</span>
+                            <span class="text-blue-300 font-mono">{{ step.action.input }}</span>
+                          </div>
+                          <div class="flex gap-2">
+                            <span class="text-slate-500 font-medium min-w-[80px]">👁️ Result:</span>
+                            <span class="text-green-300">{{ step.observation }}</span>
+                          </div>
+                        </div>
                       </div>
-                      <div><strong>Result:</strong> {{ step.observation }}</div>
                     </div>
-                  </div>
+                  </transition>
                 </div>
               </div>
             </div>
@@ -386,19 +453,19 @@ const focusInput = (): void => {
       </div>
     </main>
 
-    <!-- INPUT -->
-    <footer class="bg-white/80 backdrop-blur-sm border-t border-gray-200 p-4">
-      <div class="max-w-3xl mx-auto">
+    <!-- Input Area -->
+    <footer class="px-6 py-4 bg-slate-800/50 backdrop-blur-xl border-t border-slate-700/50">
+      <div class="max-w-4xl mx-auto">
         <div class="relative">
           <input
             v-model="userInput"
             @keyup.enter="handleInput"
-            @keyup="focusInput"
             :placeholder="
               ai.isSystemReady.value ? 'Type your message...' : 'Initializing AI Engine...'
             "
+            :disabled="!ai.isSystemReady.value || chatMessagesList.some((m) => m.loading)"
             type="text"
-            class="w-full px-6 py-4 pr-16 bg-white border border-gray-300 rounded-2xl focus:ring-2 focus:ring-blue-500 shadow-sm"
+            class="w-full px-6 py-4 pr-14 bg-slate-900/50 border border-slate-700/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-transparent placeholder-slate-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all text-white"
           />
 
           <button
@@ -408,20 +475,58 @@ const focusInput = (): void => {
               chatMessagesList.some((m) => m.loading) ||
               !ai.isSystemReady.value
             "
-            class="absolute right-3 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-linear-to-r from-blue-500 to-blue-600 text-white rounded-full flex items-center justify-center hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+            class="absolute right-2 top-1/2 -translate-y-1/2 p-2.5 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-blue-500/20"
           >
-            <span v-if="ai.isSystemReady.value">➤</span>
+            <span v-if="ai.isSystemReady.value && !chatMessagesList.some((m) => m.loading)">➤</span>
             <span v-else class="animate-spin text-xs">⏳</span>
           </button>
         </div>
-        <div class="flex justify-between mt-3 px-1 text-xs text-gray-500">
-          <span :class="mode === 'chat' ? 'text-blue-600' : 'text-purple-600'">
-            {{ mode === 'chat' ? '💬 Chat Mode' : '🤖 Agent Mode' }}
+        <div class="flex justify-between mt-3 px-1 text-xs">
+          <span
+            :class="mode === 'chat' ? 'text-blue-400 font-medium' : 'text-purple-400 font-medium'"
+          >
+            {{ mode === 'chat' ? '💬 Chat Mode (SSE Streaming)' : '🤖 Agent Mode (ReAct)' }}
           </span>
-          <span>{{ ai.isSystemReady.value ? 'Press Enter ⏎' : '⚠️ Not Ready' }}</span>
+          <span class="text-slate-500">
+            {{ ai.isSystemReady.value ? 'Press Enter ⏎' : '⚠️ Not Ready' }}
+          </span>
         </div>
       </div>
     </footer>
+
+    <!-- Metrics Modal -->
+    <teleport to="body">
+      <transition name="fade">
+        <div
+          v-if="showMetrics && ai.formattedMetrics.value"
+          class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+          @click="showMetrics = false"
+        >
+          <div
+            class="bg-slate-800 border border-slate-700/50 rounded-2xl p-6 max-w-md w-full shadow-2xl"
+            @click.stop
+          >
+            <h3 class="text-xl font-bold mb-4 flex items-center gap-2">📊 LLM Metrics</h3>
+            <div class="space-y-3">
+              <div
+                v-for="(value, key) in ai.formattedMetrics.value"
+                :key="key"
+                class="flex justify-between items-center py-2 border-b border-slate-700/50 last:border-0"
+              >
+                <span class="text-slate-400 text-sm">{{ key }}</span>
+                <span class="font-semibold text-blue-400">{{ value }}</span>
+              </div>
+            </div>
+            <button
+              @click="showMetrics = false"
+              class="mt-6 w-full px-4 py-3 bg-slate-700 hover:bg-slate-600 rounded-lg transition-all"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </transition>
+    </teleport>
   </div>
 </template>
 
@@ -431,16 +536,49 @@ const focusInput = (): void => {
 }
 
 ::-webkit-scrollbar-track {
-  background: #f1f1f1;
+  background: #1e293b;
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #c1c1c1;
+  background: #475569;
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #a1a1a1;
+  background: #64748b;
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+.slide-down-enter-active,
+.slide-down-leave-active {
+  transition: all 0.3s ease;
+}
+
+.slide-down-enter-from,
+.slide-down-leave-to {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+
+.expand-enter-active,
+.expand-leave-active {
+  transition: all 0.3s ease;
+}
+
+.expand-enter-from,
+.expand-leave-to {
+  opacity: 0;
+  max-height: 0;
+  overflow: hidden;
 }
 </style>

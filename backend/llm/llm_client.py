@@ -200,7 +200,17 @@ class LLMClient:
         except httpx.HTTPError as e:
             logger.error(f"❌ Failed to get metrics: {e}")
             raise LLMConnectionError(f"Metrics fetch failed: {e}") from e
+    def _clean_json_response(self, text: str) -> str:
+        """Extract and clean JSON from LLM output"""
+        # Remove markdown code blocks
+        text = re.sub(r'```json\s*|\s*```', '', text)
+        
+        # Try to find JSON object
+        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text)
+        if json_match:
+            return json_match.group(0)
     
+        return text.strip()
     async def react(
         self, 
         prompt: str, 
@@ -263,7 +273,7 @@ class LLMClient:
                     time_ms = data.get("time_ms", 0)
 
                     # Extract and validate JSON
-                    json_str = self._extract_json(raw_content)
+                    json_str = self._clean_json_response(raw_content)
                     json.loads(json_str)  # Validate
                     
                     logger.info(

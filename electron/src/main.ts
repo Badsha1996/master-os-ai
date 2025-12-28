@@ -195,7 +195,8 @@ ipcMain.handle("ai:request", async (_event, payload) => {
     // Increased timeout for predictions (60s), short for status (5s)
     const isPrediction =
       endpoint.includes("predict") || endpoint.includes("run");
-    const timeout = isPrediction ? 60000 : 5000;
+    const isAgent = endpoint.includes("/agent/");
+    const timeout = isAgent ? 180000 : isPrediction ? 60000 : 5000;
 
     const res = await fetchWithTimeout(
       `http://127.0.0.1:${port}${endpoint}`,
