@@ -13,7 +13,7 @@ const allowedInvokeChannels = [
 	"ai:cancel",
 	"dialog:openFolder"
 ];
-const electronAPI = {
+electron.contextBridge.exposeInMainWorld("electronAPI", {
 	invoke: (channel, data) => {
 		if (!allowedInvokeChannels.includes(channel)) throw new Error("Invalid IPC invoke channel");
 		return electron.ipcRenderer.invoke(channel, data);
@@ -79,31 +79,21 @@ const electronAPI = {
 				max_tokens: maxTokens
 			}
 		}),
-		stream: async (text, temperature = .7, maxTokens = 512, onChunk) => {
-			if (onChunk) {
-				const removeListener = electronAPI.on("ai:stream-data", onChunk);
-				try {
-					await electron.ipcRenderer.invoke("ai:request-stream", {
-						endpoint: "/api/chat/stream",
-						method: "POST",
-						body: {
-							text,
-							temperature,
-							max_tokens: maxTokens
-						}
-					});
-				} finally {
-					removeListener();
-				}
+		stream: (text, temperature = .7, maxTokens = 512) => electron.ipcRenderer.invoke("ai:request-stream", {
+			endpoint: "/api/chat/stream",
+			method: "POST",
+			body: {
+				text,
+				temperature,
+				max_tokens: maxTokens
 			}
-		},
+		}),
 		getStatus: () => electron.ipcRenderer.invoke("ai:request", {
 			endpoint: "/api/chat/status",
 			method: "GET"
 		})
 	},
 	files: { openFolder: () => electron.ipcRenderer.invoke("dialog:openFolder") }
-};
-electron.contextBridge.exposeInMainWorld("electronAPI", electronAPI);
+});
 
 //#endregion

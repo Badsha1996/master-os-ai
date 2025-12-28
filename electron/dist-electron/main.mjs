@@ -5236,7 +5236,7 @@ async function startSidecars() {
 	const backendDir = path.join(__dirname, "../../backend");
 	const rustDir = path.join(__dirname, "../../rust");
 	const pythonPath = path.join(backendDir, "venv", "Scripts", "python.exe");
-	const rustExe = path.join(rustDir, "target/release/rust-llm-sidecar.exe");
+	const rustExe = path.join(rustDir, "target/debug/rust.exe");
 	console.log("Rust directory:", rustDir);
 	console.log("Looking for Rust executable at:", rustExe);
 	if (!__require("fs").existsSync(rustExe)) {
@@ -5303,22 +5303,40 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
 			method,
 			headers: {
 				"Content-Type": "application/json",
-				"x-token": PYTHON_TOKEN
+				"x-token": PYTHON_TOKEN,
+				Accept: "text/event-stream"
 			},
 			body: JSON.stringify(body)
 		});
 		if (!response.ok) throw new Error(`Backend error: ${response.statusText}`);
-		if (response.body) {
+		if (!response.body) throw new Error("Response body is empty");
+		let buffer = "";
+		return new Promise((resolve, reject) => {
 			response.body.on("data", (chunk) => {
-				event.sender.send("ai:stream-data", chunk.toString());
+				buffer += chunk.toString();
+				const lines = buffer.split("\n");
+				buffer = lines.pop() || "";
+				for (const line of lines) if (line.startsWith("data: ")) {
+					const data = line.substring(6).trim();
+					if (data) try {
+						const parsed = JSON.parse(data);
+						event.sender.send("ai:stream-data", parsed);
+						if (parsed.done) event.sender.send("ai:stream-end");
+					} catch (e$1) {
+						console.error("Failed to parse SSE data:", e$1);
+					}
+				}
 			});
 			response.body.on("end", () => {
-				event.sender.send("ai:stream-end");
+				resolve({ success: true });
 			});
-		}
-		return { success: true };
+			response.body.on("error", (err) => {
+				reject(err);
+			});
+		});
 	} catch (error) {
 		console.error("Streaming failed:", error);
+		event.sender.send("ai:stream-error", { error });
 		return { error };
 	}
 });
