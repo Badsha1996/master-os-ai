@@ -47,17 +47,17 @@ const handleInput = async (): Promise<void> => {
   try {
     if (mode.value === 'chat') {
       if (useStreaming.value) {
-        let streamedText = ''
+        const messageIndex = chatMessagesList.value.length - 1
+
         try {
           await ai.streamChatMessage(text, (chunk) => {
-            streamedText += chunk
-            if (chatMessagesList.value[index]) {
-              chatMessagesList.value[index].ai = streamedText
+            // 2. Append directly to the object inside the array
+            // This ensures Vue's deep reactivity picks it up immediately
+            if (chatMessagesList.value[messageIndex]) {
+              chatMessagesList.value[messageIndex].ai += chunk
+              chatMessagesList.value[messageIndex].loading = false // Turn off loading on first chunk
             }
           })
-          if (chatMessagesList.value[index]) {
-            chatMessagesList.value[index].loading = false
-          }
         } catch (error) {
           console.error('Streaming failed:', error)
           if (chatMessagesList.value[index]) {
@@ -392,13 +392,15 @@ const focusInput = (): void => {
         <div class="relative">
           <input
             v-model="userInput"
-            :disabled="chatMessagesList.some((m) => m.loading) || !ai.isSystemReady.value"
             @keyup.enter="handleInput"
             @keyup="focusInput"
-            :placeholder="ai.isSystemReady.value ? 'Type your message...' : 'System not ready...'"
+            :placeholder="
+              ai.isSystemReady.value ? 'Type your message...' : 'Initializing AI Engine...'
+            "
             type="text"
-            class="w-full px-6 py-4 pr-16 bg-white border border-gray-300 rounded-2xl focus:ring-2 focus:ring-blue-500 disabled:opacity-50 shadow-sm"
+            class="w-full px-6 py-4 pr-16 bg-white border border-gray-300 rounded-2xl focus:ring-2 focus:ring-blue-500 shadow-sm"
           />
+
           <button
             @click="handleInput"
             :disabled="
@@ -406,9 +408,10 @@ const focusInput = (): void => {
               chatMessagesList.some((m) => m.loading) ||
               !ai.isSystemReady.value
             "
-            class="absolute right-3 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-linear-to-r from-blue-500 to-blue-600 text-white rounded-full flex items-center justify-center hover:shadow-lg disabled:opacity-50"
+            class="absolute right-3 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-linear-to-r from-blue-500 to-blue-600 text-white rounded-full flex items-center justify-center hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            ➤
+            <span v-if="ai.isSystemReady.value">➤</span>
+            <span v-else class="animate-spin text-xs">⏳</span>
           </button>
         </div>
         <div class="flex justify-between mt-3 px-1 text-xs text-gray-500">

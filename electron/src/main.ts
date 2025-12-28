@@ -147,29 +147,78 @@ async function startSidecars() {
   }
 }
 
+// Handler functions
+const fetchWithTimeout = async (url: string, options: any, timeout = 5000) => {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(id);
+    return response;
+  } catch (error) {
+    clearTimeout(id);
+    throw error;
+  }
+};
+
+const checkHealth = async () => {
+  for (let i = 0; i < 20; i++) {
+    try {
+      // Use the internal port directly here
+      const res = await fetch(`http://127.0.0.1:${PYTHON_PORT}/chat/status`);
+      if (res.ok) {
+        console.log("✅ AI Services Online");
+        return true;
+      }
+    } catch (e) {
+      // ignore connection errors during warmup
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return false;
+};
+
+checkHealth().then((isReady) => {
+  if (!isReady)
+    console.warn("⚠️ Sidecars are taking a long time to respond...");
+});
+
 // IPC Handler
 ipcMain.handle("ai:request", async (_event, payload) => {
   const { target = "python", endpoint, method = "POST", body } = payload;
   const port = target === "rust" ? RUST_PORT : PYTHON_PORT;
 
   try {
-    const res = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
-      method,
-      headers: {
-        "Content-Type": "application/json",
-        "x-token": PYTHON_TOKEN,
+    // Increased timeout for predictions (60s), short for status (5s)
+    const isPrediction =
+      endpoint.includes("predict") || endpoint.includes("run");
+    const timeout = isPrediction ? 60000 : 5000;
+
+    const res = await fetchWithTimeout(
+      `http://127.0.0.1:${port}${endpoint}`,
+      {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          "x-token": PYTHON_TOKEN,
+        },
+        body: body ? JSON.stringify(body) : undefined,
       },
-      body: body ? JSON.stringify(body) : undefined,
-    });
+      timeout
+    );
 
     if (!res.ok) throw new Error(`Backend error: ${res.statusText}`);
     return await res.json();
-  } catch (error) {
-    console.error("IPC AI Request Failed:", error);
-    return { error: error };
+  } catch (error: any) {
+    console.error(`IPC AI Request Failed [${endpoint}]:`, error.message);
+    return { error: error.message || "Request failed" };
   }
 });
 
+// 3. Updated Streaming Handler (Robust Parsing)
 ipcMain.handle("ai:request-stream", async (event, payload) => {
   const { endpoint, method = "POST", body } = payload;
 
@@ -185,52 +234,54 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
     });
 
     if (!response.ok) throw new Error(`Backend error: ${response.statusText}`);
-
     if (!response.body) throw new Error("Response body is empty");
 
+    // Robust SSE Parsing Logic
     let buffer = "";
 
-    return new Promise((resolve, reject) => {
-      response.body!.on("data", (chunk: Buffer) => {
-        buffer += chunk.toString();
+    // main.ts
+    response.body.on("data", (chunk) => {
+      buffer += chunk.toString();
 
-        // Parse SSE events
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || ""; // Keep incomplete line
+      // Split by the SSE double newline
+      let parts = buffer.split("\n\n");
 
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const data = line.substring(6).trim();
-            if (data) {
-              try {
-                const parsed = JSON.parse(data);
-                event.sender.send("ai:stream-data", parsed);
+      // The last part might be incomplete, keep it in buffer
+      buffer = parts.pop() || "";
 
-                if (parsed.done) {
-                  event.sender.send("ai:stream-end");
-                }
-              } catch (e) {
-                console.error("Failed to parse SSE data:", e);
-              }
-            }
-          }
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith("data: ")) continue;
+
+        const dataStr = line.slice(6);
+        try {
+          const parsed = JSON.parse(dataStr);
+          // SEND IMMEDIATELY TO VUE
+          event.sender.send("ai:stream-data", {
+            text: parsed.content || parsed.text || "",
+            done: parsed.done || false,
+          });
+        } catch (e) {
+          // Fallback for non-json
+          event.sender.send("ai:stream-data", { text: dataStr });
         }
-      });
+      }
+    });
 
-      response.body!.on("end", () => {
-        resolve({ success: true });
-      });
+    response.body.on("end", () => {
+      event.sender.send("ai:stream-end");
+    });
 
-      response.body!.on("error", (err: Error) => {
-        reject(err);
-      });
+    response.body.on("error", (err: Error) => {
+      console.error("Stream body error:", err);
+      event.sender.send("ai:stream-error", { error: err.message });
     });
 
     return { success: true };
-  } catch (error) {
-    console.error("Streaming failed:", error);
-    event.sender.send("ai:stream-error", { error: error });
-    return { error: error };
+  } catch (error: any) {
+    console.error("Streaming setup failed:", error);
+    event.sender.send("ai:stream-error", { error: error.message });
+    return { error: error.message };
   }
 });
 

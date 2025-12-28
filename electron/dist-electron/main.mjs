@@ -5277,23 +5277,54 @@ async function startSidecars() {
 		await new Promise((r$1) => setTimeout(r$1, 500));
 	}
 }
+const fetchWithTimeout = async (url, options, timeout = 5e3) => {
+	const controller = new AbortController();
+	const id = setTimeout(() => controller.abort(), timeout);
+	try {
+		const response = await fetch(url, {
+			...options,
+			signal: controller.signal
+		});
+		clearTimeout(id);
+		return response;
+	} catch (error) {
+		clearTimeout(id);
+		throw error;
+	}
+};
+const checkHealth = async () => {
+	for (let i$1 = 0; i$1 < 20; i$1++) {
+		try {
+			if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/chat/status`)).ok) {
+				console.log("✅ AI Services Online");
+				return true;
+			}
+		} catch (e$1) {}
+		await new Promise((r$1) => setTimeout(r$1, 1e3));
+	}
+	return false;
+};
+checkHealth().then((isReady) => {
+	if (!isReady) console.warn("⚠️ Sidecars are taking a long time to respond...");
+});
 ipcMain.handle("ai:request", async (_event, payload) => {
 	const { target = "python", endpoint, method = "POST", body } = payload;
 	const port = target === "rust" ? RUST_PORT : PYTHON_PORT;
 	try {
-		const res = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
+		const timeout = endpoint.includes("predict") || endpoint.includes("run") ? 6e4 : 5e3;
+		const res = await fetchWithTimeout(`http://127.0.0.1:${port}${endpoint}`, {
 			method,
 			headers: {
 				"Content-Type": "application/json",
 				"x-token": PYTHON_TOKEN
 			},
 			body: body ? JSON.stringify(body) : void 0
-		});
+		}, timeout);
 		if (!res.ok) throw new Error(`Backend error: ${res.statusText}`);
 		return await res.json();
 	} catch (error) {
-		console.error("IPC AI Request Failed:", error);
-		return { error };
+		console.error(`IPC AI Request Failed [${endpoint}]:`, error.message);
+		return { error: error.message || "Request failed" };
 	}
 });
 ipcMain.handle("ai:request-stream", async (event, payload) => {
@@ -5311,33 +5342,37 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
 		if (!response.ok) throw new Error(`Backend error: ${response.statusText}`);
 		if (!response.body) throw new Error("Response body is empty");
 		let buffer = "";
-		return new Promise((resolve, reject) => {
-			response.body.on("data", (chunk) => {
-				buffer += chunk.toString();
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
-				for (const line of lines) if (line.startsWith("data: ")) {
-					const data = line.substring(6).trim();
-					if (data) try {
-						const parsed = JSON.parse(data);
-						event.sender.send("ai:stream-data", parsed);
-						if (parsed.done) event.sender.send("ai:stream-end");
-					} catch (e$1) {
-						console.error("Failed to parse SSE data:", e$1);
-					}
+		response.body.on("data", (chunk) => {
+			buffer += chunk.toString();
+			let parts = buffer.split("\n\n");
+			buffer = parts.pop() || "";
+			for (const part of parts) {
+				const line = part.trim();
+				if (!line.startsWith("data: ")) continue;
+				const dataStr = line.slice(6);
+				try {
+					const parsed = JSON.parse(dataStr);
+					event.sender.send("ai:stream-data", {
+						text: parsed.content || parsed.text || "",
+						done: parsed.done || false
+					});
+				} catch (e$1) {
+					event.sender.send("ai:stream-data", { text: dataStr });
 				}
-			});
-			response.body.on("end", () => {
-				resolve({ success: true });
-			});
-			response.body.on("error", (err) => {
-				reject(err);
-			});
+			}
 		});
+		response.body.on("end", () => {
+			event.sender.send("ai:stream-end");
+		});
+		response.body.on("error", (err) => {
+			console.error("Stream body error:", err);
+			event.sender.send("ai:stream-error", { error: err.message });
+		});
+		return { success: true };
 	} catch (error) {
-		console.error("Streaming failed:", error);
-		event.sender.send("ai:stream-error", { error });
-		return { error };
+		console.error("Streaming setup failed:", error);
+		event.sender.send("ai:stream-error", { error: error.message });
+		return { error: error.message };
 	}
 });
 ipcMain.handle("dialog:openFolder", async () => {

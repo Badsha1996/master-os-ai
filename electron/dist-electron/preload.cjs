@@ -5,7 +5,8 @@ const allowedOnChannels = [
 	"ai:response",
 	"ai:status",
 	"ai:stream-data",
-	"ai:stream-end"
+	"ai:stream-end",
+	"ai:stream-error"
 ];
 const allowedInvokeChannels = [
 	"ai:request",
@@ -19,8 +20,8 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
 		return electron.ipcRenderer.invoke(channel, data);
 	},
 	on: (channel, callback) => {
-		if (!allowedOnChannels.includes(channel)) throw new Error("Invalid IPC on channel");
-		const listener = (_, data) => callback(data);
+		if (!allowedOnChannels.includes(channel)) throw new Error(`Invalid IPC on channel: ${channel}`);
+		const listener = (_event, data) => callback(data);
 		electron.ipcRenderer.on(channel, listener);
 		return () => electron.ipcRenderer.removeListener(channel, listener);
 	},
@@ -93,7 +94,12 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
 			method: "GET"
 		})
 	},
-	files: { openFolder: () => electron.ipcRenderer.invoke("dialog:openFolder") }
+	files: { openFolder: () => electron.ipcRenderer.invoke("dialog:openFolder") },
+	removeAllStreamListeners: () => {
+		electron.ipcRenderer.removeAllListeners("ai:stream-data");
+		electron.ipcRenderer.removeAllListeners("ai:stream-error");
+		electron.ipcRenderer.removeAllListeners("ai:stream-end");
+	}
 });
 
 //#endregion

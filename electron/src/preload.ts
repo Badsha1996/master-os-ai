@@ -3,8 +3,9 @@ import { contextBridge, ipcRenderer } from "electron";
 const allowedOnChannels = [
   "ai:response",
   "ai:status",
-  "ai:stream-data",
-  "ai:stream-end",
+  "ai:stream-data", // Existing
+  "ai:stream-end", // Existing
+  "ai:stream-error", // ADD THIS - Fixes the Invalid IPC error
 ];
 
 const allowedInvokeChannels = [
@@ -57,6 +58,8 @@ export interface ElectronAPI {
     openFolder: () => Promise<string[]>;
     // Add other file operations as needed
   };
+
+  
 }
 
 const electronAPI: ElectronAPI = {
@@ -67,11 +70,11 @@ const electronAPI: ElectronAPI = {
     return ipcRenderer.invoke(channel, data);
   },
 
-  on: (channel: string, callback: (data: any) => void) => {
+  on: (channel, callback) => {
     if (!allowedOnChannels.includes(channel)) {
-      throw new Error("Invalid IPC on channel");
+      throw new Error(`Invalid IPC on channel: ${channel}`);
     }
-    const listener = (_: any, data: any) => callback(data);
+    const listener = (_event, data) => callback(data);
     ipcRenderer.on(channel, listener);
     return () => ipcRenderer.removeListener(channel, listener);
   },
@@ -133,14 +136,15 @@ const electronAPI: ElectronAPI = {
 
   // Chat API Methods
   chat: {
-    sendMessage: (text: string, temperature = 0.7, maxTokens = 512) =>
+    sendMessage: (text, temperature = 0.7, maxTokens = 512) =>
       ipcRenderer.invoke("ai:request", {
         endpoint: "/api/chat/text-to-text",
         method: "POST",
         body: { text, temperature, max_tokens: maxTokens },
       }),
 
-    stream: (text: string, temperature = 0.7, maxTokens = 512) =>
+    // This just triggers the start; the frontend must use .on() to get data
+    stream: (text, temperature = 0.7, maxTokens = 512) =>
       ipcRenderer.invoke("ai:request-stream", {
         endpoint: "/api/chat/stream",
         method: "POST",
@@ -157,6 +161,12 @@ const electronAPI: ElectronAPI = {
   // File System API
   files: {
     openFolder: () => ipcRenderer.invoke("dialog:openFolder"),
+  },
+
+  removeAllStreamListeners: () => {
+    ipcRenderer.removeAllListeners("ai:stream-data");
+    ipcRenderer.removeAllListeners("ai:stream-error");
+    ipcRenderer.removeAllListeners("ai:stream-end");
   },
 };
 

@@ -172,48 +172,46 @@ async def text_to_text_stream(req: ChatInput):
             "prompt": prompt,
             "temperature": req.temperature,
             "max_tokens": req.max_tokens,
-            "stop": ["</s>", "[INST]", "Question:"]
+            "stop": ["</s>", "[INST]", "Question:"],
+            "stream": True
         }
 
         async def generate_stream():
             try:
+                # Increase the timeout and ensure no local proxying is buffering
                 async with httpx.AsyncClient(timeout=None) as client:
                     async with client.stream(
                         "POST",
                         f"{RUST_SIDECAR_URL}/predict/stream",
-                        json=payload
+                        json=payload,
+                        # Explicitly tell httpx not to buffer
                     ) as response:
+                        
+                        # Check if the stream actually started
                         response.raise_for_status()
                         
-                        # Forward SSE events from Rust
                         async for line in response.aiter_lines():
-                            print("***" , line)
-                            if line and not line.startswith(':'):
-                                yield f"{line}\n"
-                                if line == "":  
-                                    yield "\n"
-                
+                            if line:
+                                # LOG FOR DEBUGGING: If you see these logs one-by-one, 
+                                # then Python is working, and the problem is in Electron.
+                                # logger.info(f"Chunk: {line}") 
+                                
+                                yield f"{line}\n\n"
+                                            
             except Exception as e:
-                logger.error(f"Streaming error: {e}")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
         return StreamingResponse(
             generate_stream(),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
             }
         )
 
     except Exception as e:
         logger.exception("Stream setup failed")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Stream setup error: {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 @chat_router.get("/status")
 async def chat_status():
