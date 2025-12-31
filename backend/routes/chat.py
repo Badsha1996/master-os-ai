@@ -1,240 +1,80 @@
-from fastapi import APIRouter, HTTPException, status
-from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
-import logging
-import httpx
-import os
-import asyncio
 import json
+from fastapi import APIRouter, Depends
+import asyncio
+from pydantic import BaseModel, Field
+from llm.llm_client import LLMClient, CancelledException
+from utility.dependencies import get_llm_client
+import logging
+from fastapi.responses import StreamingResponse
+from fastapi import Request
 
 '''
-Configuration and Logging
+Logging
 '''
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("chat")
 
-# The URL where your Rust sidecar is listening
-RUST_SIDECAR_URL = os.getenv("RUST_URL", "http://127.0.0.1:5005")
-
 '''
-Request/Response Models
+Classes
 '''
 class ChatInput(BaseModel):
-    text: str = Field(..., min_length=1, description="User's chat message")
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Sampling temperature")
-    max_tokens: int = Field(default=512, ge=1, le=2048, description="Maximum tokens to generate")
-
-class ChatResponse(BaseModel):
-    response: str
-    tokens_generated: int
-    time_ms: int
-    acceleration: str
+    text: str = Field(..., min_length=1)
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=512, ge=1, le=2048)
 
 '''
-Helper Functions
+Endpoints 
 '''
-async def check_model_loaded() -> bool:
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{RUST_SIDECAR_URL}/health")
-            if response.status_code == 200:
-                health_data = response.json()
-                return health_data.get("model_loaded", False)
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-    return False
-
-async def auto_load_model() -> dict:
-    try:
-        logger.info("Auto-loading model...")
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(
-                f"{RUST_SIDECAR_URL}/load",
-                json={"gpu_layers": 99}
-            )
-            response.raise_for_status()
-            result = response.json()
-            
-            emoji = "🚀" if result.get("acceleration") == "GPU" else "🐢"
-            logger.info(f"{emoji} Model loaded: {result.get('acceleration')}")
-            return result
-    except Exception as e:
-        logger.error(f"Auto-load failed: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Failed to load model: {str(e)}"
-        )
-
-'''
-Endpoints and Router
-'''
-
 chat_router = APIRouter(prefix="/chat", tags=["Chat"])
 
-@chat_router.post("/text-to-text", response_model=ChatResponse)
-async def text_to_text(req: ChatInput):
-    try:
-        is_loaded = await check_model_loaded()
-        if not is_loaded:
-            logger.warning("⚠️ Model not loaded, auto-loading...")
-            await auto_load_model()
-
-        logger.info(f"📨 Processing chat: {req.text[:50]}...")
-
-        prompt = (
-            "<s>[INST] You are a helpful AI assistant. "
-            "Answer the question fully and clearly. "
-            "Do NOT stop mid-sentence.\n\n"
-            f"Question: {req.text}\n"
-            "Answer: [/INST]"
-        )
-
-        payload = {
-            "prompt": prompt,
-            "temperature": req.temperature,
-            "max_tokens": req.max_tokens,
-            "stop": ["</s>", "[INST]", "Question:"]
-        }
-
-       
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(
-                f"{RUST_SIDECAR_URL}/predict",
-                json=payload
-            )
-            response.raise_for_status()
-
-        data = response.json()
-        
-        # Get current acceleration type
-        acceleration = "Unknown"
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                health_response = await client.get(f"{RUST_SIDECAR_URL}/health")
-                if health_response.status_code == 200:
-                    health_data = health_response.json()
-                    acceleration = health_data.get("acceleration", "Unknown")
-        except:
-            pass
-
-        logger.info(
-            f"✅ Response generated: {data.get('tokens_generated', 0)} tokens "
-            f"in {data.get('time_ms', 0)}ms ({acceleration})"
-        )
-
-        return ChatResponse(
-            response=data.get("text", "").strip(),
-            tokens_generated=data.get("tokens_generated", 0),
-            time_ms=data.get("time_ms", 0),
-            acceleration=acceleration
-        )
-
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Rust sidecar error: {e}")
-        raise HTTPException(
-            status_code=e.response.status_code,
-            detail=f"Rust sidecar error: {e.response.text}"
-        )
-    except httpx.RequestError as e:
-        logger.error(f"Connection error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Cannot connect to Rust sidecar: {str(e)}"
-        )
-    except Exception as e:
-        logger.exception("Chat execution failed")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal error: {str(e)}"
-        )
-
+@chat_router.get("/status")
+async def chat_status(
+    llm: LLMClient = Depends(get_llm_client),
+):
+    return {
+        "service": "online",
+        "model_loaded": llm.is_loaded,
+        "acceleration": (
+            llm.acceleration_type.value
+            if llm.acceleration_type
+            else "None"
+        ),
+        "ready": llm.is_loaded,
+        "active_streams": llm.active_stream_count,
+    }
 
 @chat_router.post("/stream")
-async def text_to_text_stream(req: ChatInput):
-    try:
-        is_loaded = await check_model_loaded()
-        if not is_loaded:
-            logger.warning("⚠️ Model not loaded, auto-loading...")
-            await auto_load_model()
-
-        logger.info(f"📨 Streaming chat: {req.text[:50]}...")
-
-        
-        prompt = (
-            "<s>[INST] You are a helpful AI assistant. "
-            "Answer the question fully and clearly. "
-            "Do NOT stop mid-sentence.\n\n"
-            f"Question: {req.text}\n"
-            "Answer: [/INST]"
-        )
-        
-        payload = {
-            "prompt": prompt,
-            "temperature": req.temperature,
-            "max_tokens": req.max_tokens,
-            "stop": ["</s>", "[INST]", "Question:"],
-            "stream": True
-        }
-
-        async def generate_stream():
-            try:
-                # Increase the timeout and ensure no local proxying is buffering
-                async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream(
-                        "POST",
-                        f"{RUST_SIDECAR_URL}/predict/stream",
-                        json=payload,
-                        # Explicitly tell httpx not to buffer
-                    ) as response:
-                        
-                        # Check if the stream actually started
-                        response.raise_for_status()
-                        
-                        async for line in response.aiter_lines():
-                            if line:
-                                # LOG FOR DEBUGGING: If you see these logs one-by-one, 
-                                # then Python is working, and the problem is in Electron.
-                                # logger.info(f"Chunk: {line}") 
-                                
-                                yield f"{line}\n\n"
-                                            
-            except Exception as e:
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
-        return StreamingResponse(
-            generate_stream(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            }
-        )
-
-    except Exception as e:
-        logger.exception("Stream setup failed")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@chat_router.get("/status")
-async def chat_status():
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{RUST_SIDECAR_URL}/health")
-            response.raise_for_status()
-            health_data = response.json()
+async def text_to_text_stream(
+    req: ChatInput,
+    request: Request,
+    llm: LLMClient = Depends(get_llm_client),
+):
+    async def event_generator():
+        try:
+            async for chunk in llm.stream(
+                prompt=req.text,
+                temperature=req.temperature,
+                max_tokens=req.max_tokens
+            ):
+                if await request.is_disconnected():
+                    logger.info("Client disconnected, stopping stream")
+                    break
+                
+                yield f"data: {json.dumps({'text': chunk, 'type': 'chunk'})}\n\n"
             
-        return {
-            "service": "online",
-            "rust_server": health_data.get("status"),
-            "model_loaded": health_data.get("model_loaded"),
-            "acceleration": health_data.get("acceleration"),
-            "ready": health_data.get("model_loaded", False)
-        }
-    except Exception as e:
-        logger.error(f"Status check failed: {e}")
-        return {
-            "service": "online",
-            "rust_server": "unavailable",
-            "model_loaded": False,
-            "acceleration": "None",
-            "ready": False,
-            "error": str(e)
-        }
+            yield f"data: {json.dumps({'done': True, 'type': 'done'})}\n\n"
+
+        except CancelledException:
+            logger.info("Stream cancelled by user")
+            yield f"data: {json.dumps({'type': 'cancelled', 'message': 'Stream cancelled'})}\n\n"
+            
+        except Exception as e:
+            logger.error(f"Stream error: {e}")
+            yield f"data: {json.dumps({'error': str(e), 'type': 'error'})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@chat_router.post("/cancel")
+async def master_cancel(llm: LLMClient = Depends(get_llm_client)):
+    result = await llm.cancel_all()
+    logger.info(f"Cancel request completed: {result}")
+    return result

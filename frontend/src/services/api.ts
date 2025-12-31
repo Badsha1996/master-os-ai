@@ -8,7 +8,23 @@ import type {
   InitializeResponse,
   ChatResponse,
   ChatStatusResponse,
+  FileEvent,
 } from '../types/electron'
+
+// Add new types for file watching
+interface StartWatchResponse {
+  status: string
+  watcher_id: string
+  folder: string
+}
+
+interface StopWatchResponse {
+  status: string
+}
+
+interface GetEventsResponse {
+  events: FileEvent[]
+}
 
 class APIService {
   private api = window.electronAPI
@@ -100,11 +116,9 @@ class APIService {
     maxTokens: number = 512,
   ): Promise<void> {
     return new Promise((resolve, reject) => {
-      // Set up listeners
       const handleStreamData = (data: any) => {
         try {
           if (typeof data === 'string') {
-            // Handle SSE format
             if (data.startsWith('data: ')) {
               const jsonStr = data.substring(6).trim()
               if (jsonStr) {
@@ -158,6 +172,16 @@ class APIService {
     return this.api.chat.getStatus()
   }
 
+  /**
+   * Cancel all ongoing chat operations
+   */
+  async cancelChat(): Promise<{ status: string; cancelled: number }> {
+    return this.api.invoke('ai:request', {
+      endpoint: '/api/chat/cancel',
+      method: 'POST',
+    })
+  }
+
   // **************************** FILE SYSTEM API ****************************
 
   /**
@@ -165,6 +189,37 @@ class APIService {
    */
   async openFolderDialog(): Promise<string[]> {
     return this.api.files.openFolder()
+  }
+
+  /**
+   * Start watching a folder for file system changes
+   */
+  async startWatchingFolder(folderPath: string): Promise<StartWatchResponse> {
+    return this.api.invoke('ai:request', {
+      endpoint: '/api/file/observe/start',
+      method: 'POST',
+      body: { path: folderPath },
+    })
+  }
+
+  /**
+   * Stop watching a folder
+   */
+  async stopWatchingFolder(watcherId: string): Promise<StopWatchResponse> {
+    return this.api.invoke('ai:request', {
+      endpoint: `/api/file/observe/${watcherId}/stop`,
+      method: 'POST',
+    })
+  }
+
+  /**
+   * Get file system events for a watched folder
+   */
+  async getFileEvents(watcherId: string): Promise<GetEventsResponse> {
+    return this.api.invoke('ai:request', {
+      endpoint: `/api/file/observe/${watcherId}/events`,
+      method: 'GET',
+    })
   }
 
   // **************************** HEALTH CHECKS ****************************
@@ -224,7 +279,7 @@ class APIService {
   async autoInitialize(gpuLayers: number = 99): Promise<void> {
     try {
       console.log('Auto-initializing system...')
-      await this.initializeLLM(gpuLayers, false) // Defer loading
+      await this.initializeLLM(gpuLayers, false)
       console.log('System initialized successfully')
     } catch (error) {
       console.error('Auto-initialization failed:', error)
@@ -269,6 +324,36 @@ class APIService {
       'Avg Time/Request': `${metrics.average_time_per_request_ms.toFixed(0)}ms`,
       'Tokens/Second': ((metrics.total_tokens_generated / metrics.total_time_ms) * 1000).toFixed(2),
     }
+  }
+
+  /**
+   * Format file event type for display
+   */
+  formatFileEventType(eventType: string): string {
+    const eventEmojis: Record<string, string> = {
+      created: '📄 Created',
+      deleted: '🗑️ Deleted',
+      modified: '✏️ Modified',
+      moved: '📦 Moved',
+    }
+    return eventEmojis[eventType.toLowerCase()] || `📁 ${eventType}`
+  }
+
+  /**
+   * Format timestamp for display
+   */
+  formatTimestamp(timestamp: number): string {
+    const date = new Date(timestamp * 1000)
+    const now = new Date()
+    const diff = now.getTime() - date.getTime()
+    const seconds = Math.floor(diff / 1000)
+    const minutes = Math.floor(seconds / 60)
+    const hours = Math.floor(minutes / 60)
+
+    if (seconds < 60) return 'just now'
+    if (minutes < 60) return `${minutes}m ago`
+    if (hours < 24) return `${hours}h ago`
+    return date.toLocaleDateString()
   }
 }
 

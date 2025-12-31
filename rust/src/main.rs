@@ -5,6 +5,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use tokio_util::sync::CancellationToken;
 use axum::response::sse::{Event, KeepAlive};
 use llama_cpp_2::{
     context::params::LlamaContextParams,
@@ -139,6 +140,7 @@ struct AppState {
     backend: Arc<LlamaBackend>,
     model_state: Arc<RwLock<ModelState>>,
     metrics: Arc<RwLock<Metrics>>,
+    cancel_token: Arc<RwLock<CancellationToken>>,
 }
 
 // --- Model Loading Strategy ---
@@ -429,6 +431,10 @@ async fn handle_predict_stream(
         let mut tokens_generated = 0u32;
 
         for _ in 0..payload.max_tokens {
+            if state_clone.cancel_token.blocking_read().is_cancelled() {
+                println!("⏹️ Cancellation token triggered. Stopping...");
+                break; 
+            }
             let token = sampler.sample(&ctx, batch.n_tokens() - 1);
 
             if token == model.token_eos() {
@@ -442,13 +448,16 @@ async fn handle_predict_stream(
             generated_text.push_str(&piece);
             tokens_generated += 1;
 
-            // Send token chunk
-            if tx.blocking_send(Ok(piece.clone())).is_err() {
-                // Channel closed, stop generation
+            if let Err(_) = tx.blocking_send(Ok(piece.clone())) {
+            println!("⏹️ Python client disconnected. Stopping GPU generation...");
+            return; 
+            }
+        
+            if payload.stop.iter().any(|s| generated_text.contains(s)) {
                 break;
             }
 
-            if payload.stop.iter().any(|s| generated_text.contains(s)) {
+            if tx.blocking_send(Ok(piece.clone())).is_err() {
                 break;
             }
 
@@ -525,6 +534,16 @@ async fn handle_predict_stream(
     ))
 }
 
+async fn handle_cancel(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let token = state.cancel_token.read().await;
+    token.cancel(); 
+    drop(token);
+    let mut token = state.cancel_token.write().await;
+    *token = CancellationToken::new();
+
+    Json(serde_json::json!({"status": "cancelled"}))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
@@ -544,6 +563,7 @@ async fn main() -> anyhow::Result<()> {
             total_tokens_generated: 0,
             total_time_ms: 0,
         })),
+        cancel_token: Arc::new(RwLock::new(tokio_util::sync::CancellationToken::new())),
     });
 
     let app = Router::new()
@@ -553,6 +573,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/predict/stream", post(handle_predict_stream))
         .route("/health", get(handle_health))
         .route("/metrics", get(handle_metrics))
+        .route("/cancel", post(handle_cancel))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:5005").await?;
@@ -564,7 +585,7 @@ async fn main() -> anyhow::Result<()> {
     println!("   POST /predict/stream  - Generate text (SSE)");
     println!("   GET  /health          - Check server status");
     println!("   GET  /metrics         - View usage metrics");
-
+    println!("   GET  /cancel          - View usage metrics");
     axum::serve(listener, app).await?;
     Ok(())
 }

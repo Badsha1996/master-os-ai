@@ -1,6 +1,13 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { apiService } from '../services/api'
-import type { MetricsResponse } from '../types/electron'
+import type { MetricsResponse, FileEvent } from '../types/electron'
+
+interface WatchedFolder {
+  id: string
+  path: string
+  status: 'active' | 'stopped'
+  events: FileEvent[]
+}
 
 export function useAI() {
   const isModelLoaded = ref(false)
@@ -11,6 +18,10 @@ export function useAI() {
   const metrics = ref<MetricsResponse | null>(null)
   const chatReady = ref(false)
   const agentReady = ref(false)
+
+  // File watching state
+  const watchedFolders = ref<WatchedFolder[]>([])
+  const fileWatchError = ref<string | null>(null)
 
   // ************************** COMPUTED **************************
   const accelerationEmoji = computed(() => apiService.getAccelerationEmoji(acceleration.value))
@@ -26,9 +37,7 @@ export function useAI() {
     return `${acceleration.value} ${accelerationEmoji.value}`
   })
 
-  // FIX: Make system ready if EITHER chat OR agent is ready (not both)
   const isSystemReady = computed(() => {
-    // If model is loaded and at least one service is ready
     const ready = isModelLoaded.value && (chatReady.value || agentReady.value)
     console.log('🔍 isSystemReady:', ready, '| chatReady:', chatReady.value, '| agentReady:', agentReady.value, '| isModelLoaded:', isModelLoaded.value)
     return ready
@@ -43,17 +52,14 @@ export function useAI() {
 
   async function refreshSystemHealth() {
     try {
-      // Don't set loading during health checks - it causes UI flicker
       error.value = null
 
       const health = await apiService.checkSystemHealth()
 
       console.log('📡 Health Response:', JSON.stringify(health, null, 2))
 
-      // Update states based on health check
       isModelLoaded.value = health.chat.model_loaded || health.agent.is_loaded
       
-      // Get acceleration from whichever service is loaded
       if (health.chat.acceleration && health.chat.acceleration !== 'None') {
         acceleration.value = health.chat.acceleration as any
       } else if (health.agent.acceleration && health.agent.acceleration !== 'None') {
@@ -169,13 +175,22 @@ export function useAI() {
     }
   }
 
+  async function cancelChat() {
+    try {
+      error.value = null
+      return await apiService.cancelChat()
+    } catch (err) {
+      error.value = String(err)
+      console.error('Failed to cancel chat:', err)
+      throw err
+    }
+  }
+
   const streamChatMessage = async (text: string, onChunk: (chunk: string) => void) => {
-    // 1. Force cleanup
     window.electronAPI.removeAllStreamListeners()
 
     return new Promise<void>(async (resolve, reject) => {
       const removeData = window.electronAPI.on('ai:stream-data', (data) => {
-        // Handle standardized object from Electron Bridge
         if (data.text) onChunk(data.text)
         if (data.done) {
           cleanup()
@@ -208,30 +223,136 @@ export function useAI() {
     })
   }
 
+  // **************************** FILE WATCHING FUNCTIONS ****************************
+
+  async function startWatchingFolder(folderPath: string) {
+    try {
+      fileWatchError.value = null
+      
+      const result = await apiService.startWatchingFolder(folderPath)
+      
+      const newFolder: WatchedFolder = {
+        id: result.watcher_id,
+        path: folderPath,
+        status: 'active',
+        events: [],
+      }
+      
+      watchedFolders.value.push(newFolder)
+      
+      // Start polling for events
+      startPollingEvents(result.watcher_id)
+      
+      return result
+    } catch (err) {
+      fileWatchError.value = String(err)
+      console.error('Failed to start watching folder:', err)
+      throw err
+    }
+  }
+
+  async function stopWatchingFolder(watcherId: string) {
+    try {
+      fileWatchError.value = null
+      
+      await apiService.stopWatchingFolder(watcherId)
+      
+      // Remove from watched folders
+      watchedFolders.value = watchedFolders.value.filter(f => f.id !== watcherId)
+      
+      // Stop polling for this watcher
+      if (eventPollers[watcherId]) {
+        clearInterval(eventPollers[watcherId])
+        delete eventPollers[watcherId]
+      }
+    } catch (err) {
+      fileWatchError.value = String(err)
+      console.error('Failed to stop watching folder:', err)
+      throw err
+    }
+  }
+
+  async function getFileEvents(watcherId: string) {
+    try {
+      fileWatchError.value = null
+      
+      const result = await apiService.getFileEvents(watcherId)
+      
+      // Update events in watched folder
+      const folder = watchedFolders.value.find(f => f.id === watcherId)
+      if (folder) {
+        folder.events = result.events
+      }
+      
+      return result.events
+    } catch (err) {
+      fileWatchError.value = String(err)
+      console.error('Failed to get file events:', err)
+      throw err
+    }
+  }
+
+  async function openFolderDialog() {
+    try {
+      fileWatchError.value = null
+      const folders = await apiService.openFolderDialog()
+      
+      // Start watching all selected folders
+      for (const folderPath of folders) {
+        await startWatchingFolder(folderPath)
+      }
+      
+      return folders
+    } catch (err) {
+      fileWatchError.value = String(err)
+      console.error('Failed to open folder dialog:', err)
+      throw err
+    }
+  }
+
+  // Event polling management
+  const eventPollers: Record<string, ReturnType<typeof setInterval>> = {}
+
+  function startPollingEvents(watcherId: string) {
+    // Poll every 5 seconds
+    eventPollers[watcherId] = setInterval(async () => {
+      const folder = watchedFolders.value.find(f => f.id === watcherId)
+      if (!folder || folder.status !== 'active') {
+        clearInterval(eventPollers[watcherId])
+        delete eventPollers[watcherId]
+        return
+      }
+
+      try {
+        await getFileEvents(watcherId)
+      } catch (err) {
+        console.error(`Failed to poll events for ${watcherId}:`, err)
+      }
+    }, 5000)
+  }
+
+  // **************************** LIFECYCLE ****************************
+
   let healthCheckInterval: ReturnType<typeof setInterval> | null = null
   let readinessPoller: ReturnType<typeof setInterval> | null = null
 
   onMounted(async () => {
     console.log('🚀 Initializing AI system...')
     
-    // Initial health check
     await refreshSystemHealth()
     
-    // Initialize if model not loaded
     if (!isModelLoaded.value) {
       console.log('📦 Model not loaded, initializing...')
       await initialize(99, false)
-      // Wait a bit after init
       await new Promise(resolve => setTimeout(resolve, 1000))
       await refreshSystemHealth()
     }
 
-    // SMARTER POLLING: Start with aggressive, then back off
     if (!isSystemReady.value) {
       console.log('⏳ System not ready yet, starting smart polling...')
       
       let pollCount = 0
-      const maxQuickPolls = 10 // Only poll aggressively for 5 seconds
+      const maxQuickPolls = 10
       
       readinessPoller = setInterval(async () => {
         await refreshSystemHealth()
@@ -244,14 +365,12 @@ export function useAI() {
             readinessPoller = null
           }
         } else if (pollCount >= maxQuickPolls) {
-          // After 5 seconds of aggressive polling, slow down
           console.log('⏱️ Slowing down polling, system taking longer than expected')
           if (readinessPoller) {
             clearInterval(readinessPoller)
             readinessPoller = null
           }
           
-          // Switch to slower polling
           readinessPoller = setInterval(async () => {
             await refreshSystemHealth()
             if (isSystemReady.value && readinessPoller) {
@@ -259,11 +378,10 @@ export function useAI() {
               readinessPoller = null
               console.log('✅ System ready (after extended wait)')
             }
-          }, 3000) // Every 3 seconds
+          }, 3000)
         }
-      }, 500) // Check every 500ms for first 5 seconds
+      }, 500)
 
-      // Safety timeout after 30 seconds
       setTimeout(() => {
         if (!isSystemReady.value && readinessPoller) {
           console.error('❌ System failed to become ready in 30 seconds')
@@ -276,7 +394,6 @@ export function useAI() {
       console.log('✅ System already ready!')
     }
 
-    // Start normal periodic health checks (every 30s)
     healthCheckInterval = setInterval(() => {
       refreshSystemHealth().catch(console.error)
     }, 30000)
@@ -291,6 +408,8 @@ export function useAI() {
       clearInterval(readinessPoller)
       readinessPoller = null
     }
+    // Stop all event pollers
+    Object.values(eventPollers).forEach(interval => clearInterval(interval))
   })
 
   return {
@@ -303,6 +422,10 @@ export function useAI() {
     metrics,
     chatReady,
     agentReady,
+
+    // File watching state
+    watchedFolders,
+    fileWatchError,
 
     // Computed
     accelerationEmoji,
@@ -320,10 +443,17 @@ export function useAI() {
     runAgent,
     predictDirect,
     streamChatMessage,
+    cancelChat,
+
+    // File watching methods
+    startWatchingFolder,
+    stopWatchingFolder,
+    getFileEvents,
+    openFolderDialog,
   }
 }
 
-// Also export a simplified version for basic usage
+// Simplified version for basic usage
 export function useSimpleAI() {
   const ai = useAI()
 
