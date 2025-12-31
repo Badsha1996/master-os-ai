@@ -6,7 +6,6 @@ import type {
   LLMStatusResponse,
   PredictResponse,
   InitializeResponse,
-  ChatResponse,
   ChatStatusResponse,
   FileEvent,
 } from '../types/electron'
