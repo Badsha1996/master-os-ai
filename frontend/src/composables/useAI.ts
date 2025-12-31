@@ -187,40 +187,13 @@ export function useAI() {
   }
 
   const streamChatMessage = async (text: string, onChunk: (chunk: string) => void) => {
-    window.electronAPI.removeAllStreamListeners()
-
-    return new Promise<void>(async (resolve, reject) => {
-      const removeData = window.electronAPI.on('ai:stream-data', (data) => {
-        if (data.text) onChunk(data.text)
-        if (data.done) {
-          cleanup()
-          resolve()
-        }
-      })
-
-      const removeError = window.electronAPI.on('ai:stream-error', (err) => {
-        cleanup()
-        reject(new Error(err.error))
-      })
-
-      const removeEnd = window.electronAPI.on('ai:stream-end', () => {
-        cleanup()
-        resolve()
-      })
-
-      const cleanup = () => {
-        removeData()
-        removeError()
-        removeEnd()
-      }
-
-      try {
-        await window.electronAPI.chat.stream(text)
-      } catch (e) {
-        cleanup()
-        reject(e)
-      }
-    })
+    try {
+      return await apiService.streamChatMessage(text, onChunk)
+    } catch (err) {
+      error.value = String(err)
+      console.error('Failed to  response:', err)
+      throw err
+    }
   }
 
   // **************************** FILE WATCHING FUNCTIONS ****************************

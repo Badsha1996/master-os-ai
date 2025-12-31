@@ -217,7 +217,6 @@ ipcMain.handle("ai:request", async (_event, payload) => {
   }
 });
 
-
 ipcMain.handle("ai:request-stream", async (event, payload) => {
   const { endpoint, method = "POST", body } = payload;
 
@@ -235,26 +234,25 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
     if (!response.ok) throw new Error(`Backend error: ${response.statusText}`);
     if (!response.body) throw new Error("Response body is empty");
 
-    
     let buffer = "";
+
     response.body.on("data", (chunk) => {
       buffer += chunk.toString();
-      let parts = buffer.split("\n\n");
-      buffer = parts.pop() || "";
+      const events = buffer.split("\n\n");
+      buffer = events.pop() || "";
 
-      for (const part of parts) {
-        const line = part.trim();
-        if (!line.startsWith("data: ")) continue;
+      for (const evt of events) {
+        const line = evt.trim();
+        if (!line.startsWith("data:")) continue;
 
-        const dataStr = line.slice(6);
+        const jsonStr = line.slice(5).trim();
+        if (!jsonStr) continue;
+
         try {
-          const parsed = JSON.parse(dataStr);
-          event.sender.send("ai:stream-data", {
-            text: parsed.content || parsed.text || "",
-            done: parsed.done || false,
-          });
-        } catch (e) {
-          event.sender.send("ai:stream-data", { text: dataStr });
+          const parsed = JSON.parse(jsonStr);
+          event.sender.send("ai:stream-data", parsed);
+        } catch (err) {
+          console.error("Invalid SSE JSON:", jsonStr);
         }
       }
     });
@@ -264,17 +262,16 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
     });
 
     response.body.on("error", (err: Error) => {
-      console.error("Stream body error:", err);
       event.sender.send("ai:stream-error", { error: err.message });
     });
 
     return { success: true };
   } catch (error: any) {
-    console.error("Streaming setup failed:", error);
     event.sender.send("ai:stream-error", { error: error.message });
     return { error: error.message };
   }
 });
+
 
 ipcMain.handle("dialog:openFolder", async () => {
   const result = await dialog.showOpenDialog(mainWindow!, {

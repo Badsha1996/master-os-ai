@@ -134,14 +134,6 @@ const electronAPI: ElectronAPI = {
 
   // Chat API Methods
   chat: {
-    sendMessage: (text, temperature = 0.7, maxTokens = 512) =>
-      ipcRenderer.invoke("ai:request", {
-        endpoint: "/api/chat/text-to-text",
-        method: "POST",
-        body: { text, temperature, max_tokens: maxTokens },
-      }),
-
-    // This just triggers the start; the frontend must use .on() to get data
     stream: (text, temperature = 0.7, maxTokens = 512) =>
       ipcRenderer.invoke("ai:request-stream", {
         endpoint: "/api/chat/stream",
