@@ -24,6 +24,7 @@ rand = "0.8" # Added this (Required for LlamaSampler::dist)
 # Tracing/Logging (Essential for Prod)
 tracing = "0.1"
 tracing-subscriber = "0.3"
+tokio-util = "0.7.17"
 
 [features]
 # e.g., cargo build --no-default-features --features vulkan

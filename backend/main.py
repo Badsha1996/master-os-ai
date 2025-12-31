@@ -1,23 +1,28 @@
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Header, HTTPException, Depends
+from fastapi import FastAPI, Header, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse
-from llm.llm_client import llm_client
+from llm.llm_client import LLMClient
 from routes.file_system import file_router
 from routes.chat import chat_router
 from routes.agent import agent_router
 import uvicorn
+from dotenv import load_dotenv
+import os
 
-EXPECTED_TOKEN = "54321"
-PORT = int(os.environ.get("PYTHON_PORT", "8000"))
+load_dotenv()
 
+EXPECTED_TOKEN = os.environ.get("MASTER_TOKEN", "")
+PORT = int(os.environ.get("PYTHON_PORT", ""))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await llm_client.load_model()
+    llm = LLMClient()
+    await llm.initialize(gpu_layers=99, cold_start=True)
+    app.state.llm_client = llm
     yield
-    await llm_client.unload_model()
-
+    await llm.unload_model()
+    await llm.close()
 
 app = FastAPI(title="Master OS Worker", 
               description="Python should only act as SENCES(eyes + ears + voice)",
@@ -42,7 +47,7 @@ app.include_router(agent_router, prefix="/api", dependencies=[Depends(verify_tok
 if __name__ == "__main__":
     uvicorn.run(
         app,
-        host="127.0.0.1",
+        host=os.environ.get("HOST",""),
         port=PORT,
         log_level="info",
     )

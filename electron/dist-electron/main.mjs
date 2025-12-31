@@ -5295,7 +5295,7 @@ const fetchWithTimeout = async (url, options, timeout = 5e3) => {
 const checkHealth = async () => {
 	for (let i$1 = 0; i$1 < 20; i$1++) {
 		try {
-			if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/chat/status`)).ok) {
+			if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/chat/status`)).ok) {
 				console.log("✅ AI Services Online");
 				return true;
 			}
