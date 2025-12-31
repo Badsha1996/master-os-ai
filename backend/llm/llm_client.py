@@ -231,30 +231,33 @@ class LLMClient:
                 timeout=None 
             ) as response:
                 response.raise_for_status()
-                
+                last_chunk = None
+
                 async for line in response.aiter_lines():
                     if self._cancel_event.is_set():
-                        logger.warning(f"🛑 Stream {stream_id} cancelled")
                         raise CancelledException("Stream was cancelled")
-                    
-                    if not line or not line.startswith("data: "):
+
+                    if not line or not line.startswith("data:"):
                         continue
-                    
-                    json_str = line[6:].strip() 
-                    
+
+                    json_str = line[5:].strip()
+                    if not json_str:
+                        continue
+
                     try:
                         data = json.loads(json_str)
+
                         if data.get("type") == "chunk":
                             chunk = data.get("content")
-                            if chunk:
+                            
+                            if chunk and chunk != last_chunk:
+                                last_chunk = chunk
                                 yield chunk
-                        
-                        if data.get("done") is True or data.get("type") == "done":
-                            logger.info(f"✅ Stream {stream_id} completed normally")
-                            break 
+
+                        if data.get("type") == "done" or data.get("done") is True:
+                            break
 
                     except json.JSONDecodeError:
-                        logger.warning(f"Failed to decode SSE line: {line}")
                         continue
 
         except CancelledException:

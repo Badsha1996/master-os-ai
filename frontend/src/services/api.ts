@@ -94,74 +94,50 @@ class APIService {
   }
 
   // ****************************** CHAT API ******************************
-
   /**
    * Send a chat message and receive a response
    */
-  async sendChatMessage(
-    text: string,
-    temperature: number = 0.7,
-    maxTokens: number = 512,
-  ): Promise<ChatResponse> {
-    return this.api.chat.sendMessage(text, temperature, maxTokens)
-  }
+  async streamChatMessage(text: string, onChunk: (chunk: string) => void) {
+    window.electronAPI.removeAllStreamListeners()
 
-  /**
-   * Send a chat message with streaming response
-   */
-  async streamChatMessage(
-    text: string,
-    onChunk: (chunk: string) => void,
-    temperature: number = 0.7,
-    maxTokens: number = 512,
-  ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const handleStreamData = (data: any) => {
-        try {
-          if (typeof data === 'string') {
-            if (data.startsWith('data: ')) {
-              const jsonStr = data.substring(6).trim()
-              if (jsonStr) {
-                const parsed = JSON.parse(jsonStr)
-                if (parsed.type === 'chunk' && parsed.content) {
-                  onChunk(parsed.content)
-                } else if (parsed.type === 'done') {
-                  resolve()
-                } else if (parsed.type === 'error') {
-                  reject(new Error(parsed.content))
-                }
-              }
-            }
-          } else if (data?.content) {
-            onChunk(data.content)
-          }
-        } catch (e) {
-          console.error('Error processing stream data:', e)
-        }
-      }
-
-      const handleStreamError = (errorData: any) => {
-        reject(new Error(errorData?.error || 'Stream error'))
-      }
-
-      const handleStreamEnd = () => {
-        resolve()
-      }
-
-      const removeDataListener = window.electronAPI.on('ai:stream-data', handleStreamData)
-      const removeErrorListener = window.electronAPI.on('ai:stream-error', handleStreamError)
-      const removeEndListener = window.electronAPI.on('ai:stream-end', handleStreamEnd)
+    return new Promise<void>(async (resolve, reject) => {
+      let finished = false
 
       const cleanup = () => {
-        removeDataListener()
-        removeErrorListener()
-        removeEndListener()
+        if (finished) return
+        finished = true
+        removeData()
+        removeError()
+        removeEnd()
       }
 
-      this.api.chat.stream(text, temperature, maxTokens).then(cleanup).catch((err) => {
-        cleanup()
-        reject(err)
+      const removeData = window.electronAPI.on('ai:stream-data', (data) => {
+        if (data?.type === 'chunk' && typeof data.text === 'string') {
+          onChunk(data.text)
+        }
+
+        if (data?.type === 'done') {
+          cleanup()
+          resolve()
+        }
       })
+
+      const removeError = window.electronAPI.on('ai:stream-error', (err) => {
+        cleanup()
+        reject(new Error(err?.error || 'Stream error'))
+      })
+
+      const removeEnd = window.electronAPI.on('ai:stream-end', () => {
+        cleanup()
+        resolve()
+      })
+
+      try {
+        await window.electronAPI.chat.stream(text)
+      } catch (e) {
+        cleanup()
+        reject(e)
+      }
     })
   }
 
