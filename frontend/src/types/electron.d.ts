@@ -97,7 +97,7 @@ export interface GetEventsResponse {
 export interface ElectronAPI {
   invoke: (channel: string, data?: any) => Promise<any>
   on: (channel: string, callback: (data: any) => void) => () => void
-
+  
   // Agent API
   agent: {
     run: (task: string) => Promise<AgentRunResponse>

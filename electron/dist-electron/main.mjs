@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { BrowserWindow, app, dialog, ipcMain, session, shell } from "electron";
+import { BrowserWindow, Menu, Tray, app, dialog, globalShortcut, ipcMain, nativeImage, powerMonitor, session, shell } from "electron";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 import { randomBytes } from "crypto";
@@ -3578,7 +3578,7 @@ var require_ponyfill_es2018 = /* @__PURE__ */ __commonJSMin(((exports, module) =
 //#region node_modules/fetch-blob/streams.cjs
 var require_streams = /* @__PURE__ */ __commonJSMin((() => {
 	/* c8 ignore start */
-	const POOL_SIZE = 65536;
+	const POOL_SIZE$1 = 65536;
 	if (!globalThis.ReadableStream) try {
 		const process$1 = __require("node:process");
 		const { emitWarning } = process$1;
@@ -3601,7 +3601,7 @@ var require_streams = /* @__PURE__ */ __commonJSMin((() => {
 			return new ReadableStream({
 				type: "bytes",
 				async pull(ctrl) {
-					const buffer = await blob.slice(position, Math.min(blob.size, position + POOL_SIZE)).arrayBuffer();
+					const buffer = await blob.slice(position, Math.min(blob.size, position + POOL_SIZE$1)).arrayBuffer();
 					position += buffer.byteLength;
 					ctrl.enqueue(new Uint8Array(buffer));
 					if (position === blob.size) ctrl.close();
@@ -5185,10 +5185,13 @@ function fixResponseChunkedTransferBadEnding(request, errorCallback) {
 let mainWindow = null;
 let pythonProcess = null;
 let rustProcess = null;
+let tray = null;
+let isQuitting = false;
 const PYTHON_TOKEN = "54321";
 const PYTHON_PORT = 8e3;
 const RUST_PORT = 5005;
 const CSP_NONCE = randomBytes(16).toString("base64");
+const HOTKEYS = ["CommandOrControl+Shift+Space"];
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 async function setupSessionSecurity() {
@@ -5206,6 +5209,45 @@ async function setupSessionSecurity() {
 		} });
 	});
 }
+function getTrayIcon(status) {
+	return nativeImage.createFromPath(path.join(process.cwd(), "assets", `tray.png`));
+}
+function showWindow() {
+	if (!mainWindow) return;
+	mainWindow.show();
+	mainWindow.focus();
+}
+function toggleWindow() {
+	if (!mainWindow) return;
+	mainWindow.isVisible() ? mainWindow.hide() : showWindow();
+}
+function createTray() {
+	tray = new Tray(getTrayIcon("idle"));
+	const menu = Menu.buildFromTemplate([
+		{
+			label: "Show",
+			click: showWindow
+		},
+		{
+			label: "Settings",
+			click: () => {
+				showWindow();
+				mainWindow?.webContents.send("ui:open-setting");
+			}
+		},
+		{ type: "separator" },
+		{
+			label: "Quit",
+			click: () => app.quit()
+		}
+	]);
+	tray.setToolTip("Master OS AI");
+	tray.setContextMenu(menu);
+	tray.on("click", toggleWindow);
+}
+function registerHotkeys() {
+	for (const key of HOTKEYS) if (!globalShortcut.register(key, toggleWindow)) console.warn("Failed to register hotkey:", key);
+}
 async function createWindow() {
 	await setupSessionSecurity();
 	mainWindow = new BrowserWindow({
@@ -5220,6 +5262,12 @@ async function createWindow() {
 		}
 	});
 	mainWindow.once("ready-to-show", () => mainWindow?.show());
+	mainWindow.on("close", (e$1) => {
+		if (!isQuitting) {
+			e$1.preventDefault();
+			mainWindow?.hide();
+		}
+	});
 	mainWindow.webContents.setWindowOpenHandler(({ url }) => {
 		shell.openExternal(url);
 		return { action: "deny" };
@@ -5379,11 +5427,29 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
 ipcMain.handle("dialog:openFolder", async () => {
 	return (await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory", "multiSelections"] })).filePaths;
 });
+ipcMain.handle("tray:set-status", (_e, status) => {
+	tray?.setImage(getTrayIcon(status));
+});
+ipcMain.handle("tray:set-badge", (_e, count) => {
+	app.setBadgeCount(count);
+});
+powerMonitor.on("resume", () => {
+	mainWindow?.webContents.send("system:resume");
+});
 app.on("before-quit", () => {
+	isQuitting = true;
 	pythonProcess?.kill();
 	rustProcess?.kill();
 });
-app.whenReady().then(createWindow);
+app.on("will-quit", () => {
+	globalShortcut.unregisterAll();
+});
+app.whenReady().then(async () => {
+	if (process.platform === "darwin") app.dock?.hide();
+	await createWindow();
+	createTray();
+	registerHotkeys();
+});
 
 //#endregion
 export { file_default as n, FormData as t };

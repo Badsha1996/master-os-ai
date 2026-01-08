@@ -2,7 +2,7 @@
 import { useAI } from '@/composables/useAI'
 import Sidebar from '@/components/sidebar/index.vue'
 import type { AgentStep } from '@/types/electron'
-import { ref, nextTick } from 'vue'
+import { ref, nextTick, onMounted, onBeforeUnmount } from 'vue'
 
 type Mode = 'chat' | 'agent'
 
@@ -35,7 +35,7 @@ const showMetrics = ref(false)
 const messagesContainer = ref<HTMLElement | null>(null)
 const sidebarOpen = ref(true)
 const sidebarTab = ref<'chat' | 'files' | 'metrics'>('chat')
-
+let unsubscribe: (() => void) | undefined
 // ************************ HELPERS ************************
 const scrollToBottom = async () => {
   await nextTick()
@@ -204,6 +204,15 @@ const handleCancelChat = async () => {
     alert('Failed to cancel: ' + ai.error.value)
   }
 }
+const openSettings = () => {
+  showSettings.value = true
+}
+onMounted(() => {
+  unsubscribe = window.electronAPI.on('ui:open-setting', openSettings)
+})
+onBeforeUnmount(() => {
+  unsubscribe?.()
+})
 </script>
 
 <template>
@@ -468,9 +477,7 @@ const handleCancelChat = async () => {
                       class="flex items-center gap-2 text-xs px-3 py-2 bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/30 rounded-lg transition-all"
                     >
                       {{ msg.showSteps ? '▲' : '▼' }}
-                      {{ msg.showSteps ? 'Hide' : 'Show' }} Reasoning Steps ({{
-                        msg.steps.length
-                      }})
+                      {{ msg.showSteps ? 'Hide' : 'Show' }} Reasoning Steps ({{ msg.steps.length }})
                     </button>
 
                     <transition name="expand">
@@ -490,21 +497,15 @@ const handleCancelChat = async () => {
                           </div>
                           <div class="space-y-2 text-xs">
                             <div class="flex gap-2">
-                              <span class="text-slate-500 font-medium min-w-20"
-                                >💭 Thought:</span
-                              >
+                              <span class="text-slate-500 font-medium min-w-20">💭 Thought:</span>
                               <span class="text-slate-300">{{ step.thought }}</span>
                             </div>
                             <div class="flex gap-2">
-                              <span class="text-slate-500 font-medium min-w-20"
-                                >⚡ Input:</span
-                              >
+                              <span class="text-slate-500 font-medium min-w-20">⚡ Input:</span>
                               <span class="text-blue-300 font-mono">{{ step.action.input }}</span>
                             </div>
                             <div class="flex gap-2">
-                              <span class="text-slate-500 font-medium min-w-20"
-                                >👁️ Result:</span
-                              >
+                              <span class="text-slate-500 font-medium min-w-20">👁️ Result:</span>
                               <span class="text-green-300">{{ step.observation }}</span>
                             </div>
                           </div>
@@ -551,9 +552,7 @@ const handleCancelChat = async () => {
           </div>
           <div class="flex justify-between mt-3 px-1 text-xs">
             <span
-              :class="
-                mode === 'chat' ? 'text-blue-400 font-medium' : 'text-purple-400 font-medium'
-              "
+              :class="mode === 'chat' ? 'text-blue-400 font-medium' : 'text-purple-400 font-medium'"
             >
               {{ mode === 'chat' ? '💬 Chat Mode (SSE Streaming)' : '🤖 Agent Mode (ReAct)' }}
             </span>

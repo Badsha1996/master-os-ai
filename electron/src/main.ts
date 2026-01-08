@@ -1,4 +1,16 @@
-import { app, BrowserWindow, session, shell, ipcMain, dialog } from "electron";
+import {
+  app,
+  BrowserWindow,
+  session,
+  shell,
+  ipcMain,
+  dialog,
+  Tray,
+  Menu,
+  globalShortcut,
+  nativeImage,
+  powerMonitor,
+} from "electron";
 import { spawn, ChildProcess } from "child_process";
 import { fileURLToPath } from "url";
 import { randomBytes } from "crypto";
@@ -8,11 +20,17 @@ import fetch from "node-fetch";
 let mainWindow: BrowserWindow | null = null;
 let pythonProcess: ChildProcess | null = null;
 let rustProcess: ChildProcess | null = null;
+let tray: Tray | null = null;
+let isQuitting = false;
 
 const PYTHON_TOKEN = "54321";
 const PYTHON_PORT = 8000;
 const RUST_PORT = 5005;
 const CSP_NONCE = randomBytes(16).toString("base64");
+
+
+const HOTKEYS = ["CommandOrControl+Shift+Space"];
+type TrayStatus = "idle" | "thinking" | "error";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,6 +56,46 @@ async function setupSessionSecurity() {
     });
   });
 }
+function getTrayIcon(status: TrayStatus) {
+  return nativeImage.createFromPath(path.join(process.cwd(),"assets", `tray.png`));
+}
+function showWindow() {
+  if (!mainWindow) return;
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function toggleWindow() {
+  if (!mainWindow) return;
+  mainWindow.isVisible() ? mainWindow.hide() : showWindow();
+}
+function createTray() {
+  tray = new Tray(getTrayIcon("idle"));
+
+  const menu = Menu.buildFromTemplate([
+    { label: "Show", click: showWindow },
+    {
+      label: "Settings",
+      click: () => {
+        showWindow();
+        mainWindow?.webContents.send("ui:open-setting");
+      },
+    },
+    { type: "separator" },
+    { label: "Quit", click: () => app.quit() },
+  ]);
+
+  tray.setToolTip("Master OS AI");
+  tray.setContextMenu(menu);
+  tray.on("click", toggleWindow);
+}
+
+function registerHotkeys() {
+  for (const key of HOTKEYS) {
+    const ok = globalShortcut.register(key, toggleWindow);
+    if (!ok) console.warn("Failed to register hotkey:", key);
+  }
+}
 
 async function createWindow() {
   await setupSessionSecurity();
@@ -55,7 +113,12 @@ async function createWindow() {
   });
 
   mainWindow.once("ready-to-show", () => mainWindow?.show());
-
+ mainWindow.on("close", (e) => {
+    if (!isQuitting) {
+      e.preventDefault();
+      mainWindow?.hide();
+    }
+  });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: "deny" };
@@ -283,10 +346,33 @@ ipcMain.handle("dialog:openFolder", async () => {
   return result.filePaths;
 });
 
+ipcMain.handle("tray:set-status", (_e, status: TrayStatus) => {
+  tray?.setImage(getTrayIcon(status));
+});
+
+ipcMain.handle("tray:set-badge", (_e, count: number) => {
+  app.setBadgeCount(count);
+});
+powerMonitor.on("resume", () => {
+  mainWindow?.webContents.send("system:resume");
+});
+
+
 // Cleanup
 app.on("before-quit", () => {
+   isQuitting = true;
   pythonProcess?.kill();
   rustProcess?.kill();
 });
-
-app.whenReady().then(createWindow);
+app.on("will-quit", () => {
+  globalShortcut.unregisterAll();
+});
+app.whenReady().then(async () => {
+  app.setLoginItemSettings({
+    openAtLogin: true,
+  });
+  if (process.platform === "darwin") app.dock?.hide();
+  await createWindow();
+  createTray();
+  registerHotkeys();
+});

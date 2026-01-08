@@ -6,6 +6,7 @@ const allowedOnChannels = [
   "ai:stream-data", 
   "ai:stream-end", 
   "ai:stream-error", 
+  "ui:open-setting"
 ];
 
 const allowedInvokeChannels = [
@@ -20,7 +21,6 @@ type InvokeChannel = (typeof allowedInvokeChannels)[number];
 export interface ElectronAPI {
   invoke: (channel: InvokeChannel, data?: any) => Promise<any>;
   on: (channel: string, callback: (data: any) => void) => () => void;
-
   // Agent API
   agent: {
     run: (task: string) => Promise<any>;

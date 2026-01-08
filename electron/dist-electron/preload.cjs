@@ -6,7 +6,8 @@ const allowedOnChannels = [
 	"ai:status",
 	"ai:stream-data",
 	"ai:stream-end",
-	"ai:stream-error"
+	"ai:stream-error",
+	"ui:open-setting"
 ];
 const allowedInvokeChannels = [
 	"ai:request",
