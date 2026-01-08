@@ -6,6 +6,8 @@ import path from "path";
 import fetch from "node-fetch";
 
 let mainWindow: BrowserWindow | null = null;
+
+let viteProcess: ChildProcess | null = null;
 let pythonProcess: ChildProcess | null = null;
 let rustProcess: ChildProcess | null = null;
 
@@ -80,6 +82,32 @@ async function createWindow() {
 
   // Start both sidecars in sequence (PYTHON + RUST)
   await startSidecars();
+  await checkHealth();
+}
+
+async function startFrontendDevServer() {
+  if (process.env.NODE_ENV !== "development") return;
+
+  const frontendDir = path.join(__dirname, "../../frontend");
+
+  console.log("🚀 Starting Vite dev server...");
+
+  viteProcess = spawn(
+    process.platform === "win32" ? "npm.cmd" : "npm",
+    ["run", "dev"],
+    {
+      cwd: frontendDir,
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        BROWSER: "none", // prevent auto browser open
+      },
+    }
+  );
+
+  viteProcess.on("error", (err) => {
+    console.error("❌ Failed to start Vite:", err);
+  });
 }
 
 async function startSidecars() {
@@ -110,6 +138,8 @@ async function startSidecars() {
     cwd: rustDir,
     stdio: "inherit",
     env: { ...process.env, PORT: String(RUST_PORT) },
+    stdio: "pipe", 
+    windowsHide: true,
   });
 
   // 2. Start Python (Passing RUST_URL as env)
@@ -130,8 +160,12 @@ async function startSidecars() {
         ...process.env,
         PYTHON_TOKEN,
         RUST_URL: `http://127.0.0.1:${RUST_PORT}`,
+        VIRTUAL_ENV: path.join(backendDir, "venv"),
+        PATH: `${path.join(backendDir, "venv", "Scripts")};${process.env.PATH}`,
       },
-      stdio: "inherit",
+      // stdio: "inherit",
+      stdio: "pipe", // or "ignore" if you don’t need logs
+      windowsHide: true, // <-- hide CMD window
     }
   );
 
@@ -165,25 +199,22 @@ const fetchWithTimeout = async (url: string, options: any, timeout = 5000) => {
 };
 
 const checkHealth = async () => {
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 30; i++) {
     try {
-      const res = await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/chat/status`);
+      const res = await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, {
+        headers: { "x-token": PYTHON_TOKEN },
+      });
       if (res.ok) {
-        console.log("✅ AI Services Online");
+        console.log("✅ Python backend ready");
         return true;
       }
-    } catch (e) {
-      
-    }
+    } catch (e) {}
     await new Promise((r) => setTimeout(r, 1000));
   }
+  console.error("Python backend never came up");
+
   return false;
 };
-
-checkHealth().then((isReady) => {
-  if (!isReady)
-    console.warn("⚠️ Sidecars are taking a long time to respond...");
-});
 
 // IPC Handler
 ipcMain.handle("ai:request", async (_event, payload) => {
@@ -271,7 +302,6 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
     return { error: error.message };
   }
 });
-
 
 ipcMain.handle("dialog:openFolder", async () => {
   const result = await dialog.showOpenDialog(mainWindow!, {
