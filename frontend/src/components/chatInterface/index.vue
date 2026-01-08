@@ -428,11 +428,7 @@ onBeforeUnmount(() => {
                       <div
                         class="w-2 h-2 bg-blue-400 rounded-full animate-bounce"
                         style="animation-delay: 150ms"
-                      />
-                      <div
-                        class="w-2 h-2 bg-blue-400 rounded-full animate-bounce"
-                        style="animation-delay: 300ms"
-                      />
+                      ></div>
                     </div>
                     <span class="text-sm text-slate-400 ml-2">
                       {{ mode === 'agent' ? 'Agent Thinking...' : 'Thinking...' }}

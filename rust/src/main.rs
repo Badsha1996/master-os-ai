@@ -448,18 +448,15 @@ async fn handle_predict_stream(
             generated_text.push_str(&piece);
             tokens_generated += 1;
 
-            if let Err(_) = tx.blocking_send(Ok(piece.clone())) {
-            println!("⏹️ Python client disconnected. Stopping GPU generation...");
-            return; 
+            if tx.blocking_send(Ok(piece.clone())).is_err() {
+                println!("⏹️ Client disconnected. Stopping generation...");
+                return;
             }
-        
+
             if payload.stop.iter().any(|s| generated_text.contains(s)) {
                 break;
             }
 
-            if tx.blocking_send(Ok(piece.clone())).is_err() {
-                break;
-            }
 
             batch.clear();
             if batch.add(token, n_cur, &[0.into()], true).is_err() {

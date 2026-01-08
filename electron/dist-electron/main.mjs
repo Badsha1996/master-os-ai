@@ -5279,6 +5279,7 @@ async function createWindow() {
 		mainWindow?.webContents.executeJavaScript(`window.__CSP_NONCE__ = "${CSP_NONCE}";`);
 	});
 	await startSidecars();
+	await checkHealth();
 }
 async function startSidecars() {
 	const backendDir = path.join(__dirname, "../../backend");
@@ -5299,7 +5300,9 @@ async function startSidecars() {
 		env: {
 			...process.env,
 			PORT: String(RUST_PORT)
-		}
+		},
+		stdio: "pipe",
+		windowsHide: true
 	});
 	pythonProcess = spawn(pythonPath, [
 		"-m",
@@ -5314,9 +5317,12 @@ async function startSidecars() {
 		env: {
 			...process.env,
 			PYTHON_TOKEN,
-			RUST_URL: `http://127.0.0.1:${RUST_PORT}`
+			RUST_URL: `http://127.0.0.1:${RUST_PORT}`,
+			VIRTUAL_ENV: path.join(backendDir, "venv"),
+			PATH: `${path.join(backendDir, "venv", "Scripts")};${process.env.PATH}`
 		},
-		stdio: "inherit"
+		stdio: "pipe",
+		windowsHide: true
 	});
 	for (let i$1 = 0; i$1 < 15; i$1++) {
 		try {
@@ -5341,20 +5347,18 @@ const fetchWithTimeout = async (url, options, timeout = 5e3) => {
 	}
 };
 const checkHealth = async () => {
-	for (let i$1 = 0; i$1 < 20; i$1++) {
+	for (let i$1 = 0; i$1 < 30; i$1++) {
 		try {
-			if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/chat/status`)).ok) {
-				console.log("✅ AI Services Online");
+			if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, { headers: { "x-token": PYTHON_TOKEN } })).ok) {
+				console.log("✅ Python backend ready");
 				return true;
 			}
 		} catch (e$1) {}
 		await new Promise((r$1) => setTimeout(r$1, 1e3));
 	}
+	console.error("Python backend never came up");
 	return false;
 };
-checkHealth().then((isReady) => {
-	if (!isReady) console.warn("⚠️ Sidecars are taking a long time to respond...");
-});
 ipcMain.handle("ai:request", async (_event, payload) => {
 	const { target = "python", endpoint, method = "POST", body } = payload;
 	const port = target === "rust" ? RUST_PORT : PYTHON_PORT;
@@ -5393,20 +5397,18 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
 		let buffer = "";
 		response.body.on("data", (chunk) => {
 			buffer += chunk.toString();
-			let parts = buffer.split("\n\n");
-			buffer = parts.pop() || "";
-			for (const part of parts) {
-				const line = part.trim();
-				if (!line.startsWith("data: ")) continue;
-				const dataStr = line.slice(6);
+			const events = buffer.split("\n\n");
+			buffer = events.pop() || "";
+			for (const evt of events) {
+				const line = evt.trim();
+				if (!line.startsWith("data:")) continue;
+				const jsonStr = line.slice(5).trim();
+				if (!jsonStr) continue;
 				try {
-					const parsed = JSON.parse(dataStr);
-					event.sender.send("ai:stream-data", {
-						text: parsed.content || parsed.text || "",
-						done: parsed.done || false
-					});
-				} catch (e$1) {
-					event.sender.send("ai:stream-data", { text: dataStr });
+					const parsed = JSON.parse(jsonStr);
+					event.sender.send("ai:stream-data", parsed);
+				} catch (err) {
+					console.error("Invalid SSE JSON:", jsonStr);
 				}
 			}
 		});
@@ -5414,12 +5416,10 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
 			event.sender.send("ai:stream-end");
 		});
 		response.body.on("error", (err) => {
-			console.error("Stream body error:", err);
 			event.sender.send("ai:stream-error", { error: err.message });
 		});
 		return { success: true };
 	} catch (error) {
-		console.error("Streaming setup failed:", error);
 		event.sender.send("ai:stream-error", { error: error.message });
 		return { error: error.message };
 	}

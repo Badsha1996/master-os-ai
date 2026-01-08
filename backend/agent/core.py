@@ -89,68 +89,58 @@ class AgentCore:
         )
 
         history_text = ""
-        for i, step in enumerate(history[-3:]):
+        for i, step in enumerate(history):
             obs = str(step.get('observation', ''))
-            if len(obs) > 500:
-                obs = obs[:500] + "... (truncated)"
-            
-            history_text += (
-                f"\nStep {i+1}:\n"
-                f"Thought: {step.get('thought', '')}\n"
-                f"Action: {json.dumps(step.get('action', {}))}\n"
-                f"Observation: {obs}\n"
-            )
+            if len(obs) > 200: obs = obs[:200] + "..."
+            history_text += f"\nStep {i+1}:\nThought: {step.get('thought')}\nAction: {step.get('action', {}).get('name')}\nObservation: {obs}\n"
 
-        return f"""You are a helpful AI assistant with access to tools.
-            Task: {task}
+        return f"""You are MOS-AI-ReAct, an autonomous agent.
+                TASK: {task}
 
-            Available Tools:
-            {tools_desc}
-            - finish: Use this when you have the final answer. Put the answer in the 'input' field.
+                AVAILABLE TOOLS(You MUST pick only from this list):
+                {tools_desc}
+                - finish: Use this to deliver the FINAL answer to the user. Input: The full text of your response.
 
-            CRITICAL RULES:
-            1. For simple greetings/questions, use finish immediately with your response
-            2. Use tools only when needed for specific tasks
-            3. Always provide an answer in finish's input field
-            4. Output ONLY valid JSON, no extra text
+                STRATEGY:
+                1. If the task is a simple greeting or a question you can answer yourself (like an essay), use the 'finish' tool immediately with the full content as input.
+                2. Pick a tool ONLY from this list: {self.tools.items()}.
+                3. If you need external data (weather, time, files), pick the correct tool.
+                4. ALWAYS check history. If a tool already provided the result, do not call it again. Use 'finish'.
+                5.If the history shows a tool succeeded (✅ Success!), you MUST use 'finish'.
+                6. Output ONLY valid JSON.
 
-            JSON Format:
-            {{
-            "thought": "your reasoning",
-            "action": {{ "name": "tool_name", "input": "value or answer" }}
-            }}
+                JSON FORMAT:
+                {{
+                    "thought": "The user wants an essay. I will write it now and use the finish tool.",
+                    "action": {{ "name": "finish", "input": "Once upon a time..." }}
+                }}
 
-            Examples:
-            - For "hi": {{"thought": "User is greeting me", "action": {{"name": "finish", "input": "Hello! How can I help you today?"}}}}
-            - For "2+2": {{"thought": "Need to calculate", "action": {{"name": "calculator", "input": "2+2"}}}}
+                HISTORY:
+                {history_text or "No previous steps."}
 
-            History:
-            {history_text or "No previous steps."}
+                Your JSON response:"""
 
-            Your JSON response:"""
-    
     def _parse_response(self, response: str) -> Tuple[str, Dict[str, Any]]:
         try:
+            import re
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                response = json_match.group(0)
+
             data = json.loads(response)
-            thought = data.get("thought", "No thought provided")
+            thought = data.get("thought", "Thinking...")
             action = data.get("action")
 
-            if not action or not isinstance(action, dict):
-                if "tool_name" in data:
-                    action = {"name": data["tool_name"], "input": data.get("tool_input", "")}
-                else:
-                    raise ValueError("Missing 'action' object in JSON")
-
-            if "name" not in action:
-                raise ValueError("Action missing 'name' field")
-            
-            if "input" not in action:
-                action["input"] = ""
+            # If LLM sends null action or empty, provide a "fake" error action 
+            # so the loop continues and the LLM sees the error in History.
+            if not action:
+                return thought, {"name": "error", "input": "You must provide an action. If done, use 'finish'."}
 
             return thought, action
-
         except Exception as e:
-            raise ValueError(f"Failed to parse LLM response: {e}")
+            logger.error(f"Raw response that failed: {response}") 
+            # Instead of crashing the whole run, return a recovery action
+            return "Parsing error", {"name": "error", "input": f"Invalid JSON format: {str(e)}"}
 
     def _sanitize_action_name(self, name: str) -> str:
         name = name.strip().lower()

@@ -72,15 +72,6 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
 		})
 	},
 	chat: {
-		sendMessage: (text, temperature = .7, maxTokens = 512) => electron.ipcRenderer.invoke("ai:request", {
-			endpoint: "/api/chat/text-to-text",
-			method: "POST",
-			body: {
-				text,
-				temperature,
-				max_tokens: maxTokens
-			}
-		}),
 		stream: (text, temperature = .7, maxTokens = 512) => electron.ipcRenderer.invoke("ai:request-stream", {
 			endpoint: "/api/chat/stream",
 			method: "POST",
