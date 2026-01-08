@@ -5252,7 +5252,9 @@ async function startSidecars() {
 		env: {
 			...process.env,
 			PORT: String(RUST_PORT)
-		}
+		},
+		stdio: "pipe",
+		windowsHide: true
 	});
 	pythonProcess = spawn(pythonPath, [
 		"-m",
@@ -5271,7 +5273,8 @@ async function startSidecars() {
 			VIRTUAL_ENV: path.join(backendDir, "venv"),
 			PATH: `${path.join(backendDir, "venv", "Scripts")};${process.env.PATH}`
 		},
-		stdio: "inherit"
+		stdio: "pipe",
+		windowsHide: true
 	});
 	for (let i$1 = 0; i$1 < 15; i$1++) {
 		try {

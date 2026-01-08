@@ -138,6 +138,8 @@ async function startSidecars() {
     cwd: rustDir,
     stdio: "inherit",
     env: { ...process.env, PORT: String(RUST_PORT) },
+    stdio: "pipe", 
+    windowsHide: true,
   });
 
   // 2. Start Python (Passing RUST_URL as env)
@@ -161,7 +163,9 @@ async function startSidecars() {
         VIRTUAL_ENV: path.join(backendDir, "venv"),
         PATH: `${path.join(backendDir, "venv", "Scripts")};${process.env.PATH}`,
       },
-      stdio: "inherit",
+      // stdio: "inherit",
+      stdio: "pipe", // or "ignore" if you don’t need logs
+      windowsHide: true, // <-- hide CMD window
     }
   );
 
