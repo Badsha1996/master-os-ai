@@ -4,7 +4,7 @@
   "description": "This is going to be an ambitious project",
   "private": true,
   "scripts": {
-    "dev": "concurrently -n \"RUST,FRONTEND,BACKEND,ELECTRON\" -c \"yellow,green,blue,magenta\" \"npm run dev:rust\" \"npm run dev:frontend\" \"npm run dev:backend\" \"npm run dev:electron\"",
+    "dev": "concurrently -n \"FRONTEND,ELECTRON\" -c \"yellow,green\"  \"npm run dev:frontend\"  \"npm run dev:electron\"",
     "dev:without_rust": "concurrently -n \"FRONTEND,BACKEND,ELECTRON\" -c \"green,blue,magenta\" \"npm run dev:frontend\" \"npm run dev:backend\" \"npm run dev:electron\"",
     "dev:frontend": "cd frontend && npm run dev",
     "dev:backend": "cd backend && npm run dev",

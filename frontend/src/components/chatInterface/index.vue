@@ -419,11 +419,7 @@ const handleCancelChat = async () => {
                       <div
                         class="w-2 h-2 bg-blue-400 rounded-full animate-bounce"
                         style="animation-delay: 150ms"
-                      />
-                      <div
-                        class="w-2 h-2 bg-blue-400 rounded-full animate-bounce"
-                        style="animation-delay: 300ms"
-                      />
+                      ></div>
                     </div>
                     <span class="text-sm text-slate-400 ml-2">
                       {{ mode === 'agent' ? 'Agent Thinking...' : 'Thinking...' }}
@@ -468,9 +464,7 @@ const handleCancelChat = async () => {
                       class="flex items-center gap-2 text-xs px-3 py-2 bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/30 rounded-lg transition-all"
                     >
                       {{ msg.showSteps ? '▲' : '▼' }}
-                      {{ msg.showSteps ? 'Hide' : 'Show' }} Reasoning Steps ({{
-                        msg.steps.length
-                      }})
+                      {{ msg.showSteps ? 'Hide' : 'Show' }} Reasoning Steps ({{ msg.steps.length }})
                     </button>
 
                     <transition name="expand">
@@ -490,21 +484,15 @@ const handleCancelChat = async () => {
                           </div>
                           <div class="space-y-2 text-xs">
                             <div class="flex gap-2">
-                              <span class="text-slate-500 font-medium min-w-20"
-                                >💭 Thought:</span
-                              >
+                              <span class="text-slate-500 font-medium min-w-20">💭 Thought:</span>
                               <span class="text-slate-300">{{ step.thought }}</span>
                             </div>
                             <div class="flex gap-2">
-                              <span class="text-slate-500 font-medium min-w-20"
-                                >⚡ Input:</span
-                              >
+                              <span class="text-slate-500 font-medium min-w-20">⚡ Input:</span>
                               <span class="text-blue-300 font-mono">{{ step.action.input }}</span>
                             </div>
                             <div class="flex gap-2">
-                              <span class="text-slate-500 font-medium min-w-20"
-                                >👁️ Result:</span
-                              >
+                              <span class="text-slate-500 font-medium min-w-20">👁️ Result:</span>
                               <span class="text-green-300">{{ step.observation }}</span>
                             </div>
                           </div>
@@ -551,9 +539,7 @@ const handleCancelChat = async () => {
           </div>
           <div class="flex justify-between mt-3 px-1 text-xs">
             <span
-              :class="
-                mode === 'chat' ? 'text-blue-400 font-medium' : 'text-purple-400 font-medium'
-              "
+              :class="mode === 'chat' ? 'text-blue-400 font-medium' : 'text-purple-400 font-medium'"
             >
               {{ mode === 'chat' ? '💬 Chat Mode (SSE Streaming)' : '🤖 Agent Mode (ReAct)' }}
             </span>
