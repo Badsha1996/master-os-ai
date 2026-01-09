@@ -136,9 +136,8 @@ async function startSidecars() {
   // 1. Start Rust
   rustProcess = spawn(rustExe, [], {
     cwd: rustDir,
-    stdio: "inherit",
+    stdio: "pipe",
     env: { ...process.env, PORT: String(RUST_PORT) },
-    stdio: "pipe", 
     windowsHide: true,
   });
 

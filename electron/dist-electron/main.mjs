@@ -5248,12 +5248,11 @@ async function startSidecars() {
 	}
 	rustProcess = spawn(rustExe, [], {
 		cwd: rustDir,
-		stdio: "inherit",
+		stdio: "pipe",
 		env: {
 			...process.env,
 			PORT: String(RUST_PORT)
 		},
-		stdio: "pipe",
 		windowsHide: true
 	});
 	pythonProcess = spawn(pythonPath, [
