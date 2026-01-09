@@ -1,5 +1,6 @@
 import os
 from contextlib import asynccontextmanager
+import threading
 from fastapi import FastAPI, Header, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse
 from llm.llm_client import LLMClient
@@ -9,6 +10,7 @@ from routes.agent import agent_router
 import uvicorn
 from dotenv import load_dotenv
 import os
+from utility.index_files_background import index_files_background
 
 load_dotenv()
 
@@ -20,6 +22,8 @@ async def lifespan(app: FastAPI):
     llm = LLMClient()
     await llm.initialize(gpu_layers=99, cold_start=True)
     app.state.llm_client = llm
+    thread = threading.Thread(target=index_files_background, daemon=True)
+    thread.start()
     yield
     await llm.unload_model()
     await llm.close()

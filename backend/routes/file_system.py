@@ -1,3 +1,4 @@
+from itertools import islice
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -9,6 +10,8 @@ import time
 import os
 from typing import Dict, List
 import uuid
+
+from utility.state import search_state
 
 '''
 Req and Res models
@@ -134,15 +137,32 @@ def start_watching(req: FolderRequest) -> JSONResponse:
         }
     )
 
-
 @file_router.post("/observe/{watcher_id}/stop")
 def stop_watching(watcher_id: str) -> JSONResponse:
     manager.stop_watcher(watcher_id)
     return JSONResponse(content={"status": "watching stopped"})
-
 
 @file_router.get("/observe/{watcher_id}/events")
 def get_events(watcher_id: str) -> JSONResponse:
     events = manager.get_events(watcher_id)
     return JSONResponse(content={"events": [e.model_dump() for e in events]})
 
+@file_router.post("/search")
+def search_files(file_name: str) -> JSONResponse:
+    if not file_name:
+        return JSONResponse(content={"files": []})
+
+    query = file_name.lower()
+    
+    matches_iterator = (
+        path for path in search_state.FILE_INDEX 
+        if query in os.path.basename(path).lower()
+    )
+
+    limited_results = list(islice(matches_iterator, 50))
+
+    return JSONResponse(content={
+        "files": limited_results, 
+        "total_indexed": len(search_state.FILE_INDEX),
+        "indexing_status": "Indexing..." if search_state.IS_INDEXING else "Ready"
+    })
