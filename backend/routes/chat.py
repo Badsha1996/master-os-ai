@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 import asyncio
 from pydantic import BaseModel, Field
 from llm.llm_client import LLMClient, CancelledException
-from utility.dependencies import get_llm_client
+from utility.get_llm_client import get_llm_client
 import logging
 from fastapi.responses import StreamingResponse
 from fastapi import Request
