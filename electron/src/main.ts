@@ -10,6 +10,7 @@ import {
   globalShortcut,
   nativeImage,
   powerMonitor,
+  screen
 } from "electron";
 import { spawn, ChildProcess } from "child_process";
 import { fileURLToPath } from "url";
@@ -18,6 +19,7 @@ import path from "path";
 import fetch from "node-fetch";
 
 let mainWindow: BrowserWindow | null = null;
+let inputWindow: BrowserWindow | null = null;
 
 let viteProcess: ChildProcess | null = null;
 let pythonProcess: ChildProcess | null = null;
@@ -30,8 +32,6 @@ const PYTHON_PORT = 8000;
 const RUST_PORT = 5005;
 const CSP_NONCE = randomBytes(16).toString("base64");
 
-
-const HOTKEYS = ["CommandOrControl+Shift+Space"];
 type TrayStatus = "idle" | "thinking" | "error";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -59,7 +59,9 @@ async function setupSessionSecurity() {
   });
 }
 function getTrayIcon(status: TrayStatus) {
-  return nativeImage.createFromPath(path.join(process.cwd(),"assets", `tray.png`));
+  return nativeImage.createFromPath(
+    path.join(process.cwd(), "assets", `tray.png`)
+  );
 }
 function showWindow() {
   if (!mainWindow) return;
@@ -91,10 +93,82 @@ function createTray() {
   tray.setContextMenu(menu);
   tray.on("click", toggleWindow);
 }
+async function createInputWindow() {
+  if (inputWindow && !inputWindow.isDestroyed()) return;
 
+  try {
+    const { width } = screen.getPrimaryDisplay().workAreaSize;
+
+    inputWindow = new BrowserWindow({
+      width: 600,
+      height: 60,
+      x: Math.floor((width - 600) / 2),
+      y: 40,
+      frame: false,
+      transparent: true,
+      alwaysOnTop: true,
+      resizable: false,
+      movable: false,
+      skipTaskbar: true,
+      focusable: true,
+      show: false,
+      webPreferences: {
+        preload: path.join(__dirname, "preload.cjs"),
+        contextIsolation: true,
+        sandbox: true,
+      },
+    });
+
+    inputWindow.on("close", (e) => {
+      e.preventDefault();
+      inputWindow?.hide();
+    });
+
+    inputWindow.on("blur", () => {
+      inputWindow?.hide();
+    });
+
+    if (process.env.NODE_ENV === "development") {
+      await inputWindow.loadURL("http://localhost:5173/command");
+    } else if (process.env.VITE_DEV_SERVER_URL) {
+      await inputWindow.loadURL(process.env.VITE_DEV_SERVER_URL + "/command");
+    } else {
+      await inputWindow.loadFile(
+        path.join(__dirname, "../frontend/dist/index.html"),
+        { search: "?route=command" }
+      );
+    }
+  } catch (err) {
+    console.error("Failed to create input window:", err);
+
+    if (inputWindow && !inputWindow.isDestroyed()) {
+      inputWindow.destroy();
+    }
+
+    inputWindow = null;
+    throw err; // let caller decide
+  }
+}
+
+async function toggleInputWindow() {
+  if (!inputWindow || inputWindow.isDestroyed()) {
+    await createInputWindow();
+  }
+
+  if (inputWindow!.isVisible()) {
+    inputWindow!.hide();
+  } else {
+    inputWindow!.show();
+    inputWindow!.focus();
+  }
+}
+const HOTKEY_ACTIONS: Record<string, () => void> = {
+  "CommandOrControl+Shift+Space": toggleWindow,
+  "CommandOrControl+Shift+K": toggleInputWindow,
+};
 function registerHotkeys() {
-  for (const key of HOTKEYS) {
-    const ok = globalShortcut.register(key, toggleWindow);
+  for (const [key, handler] of Object.entries(HOTKEY_ACTIONS)) {
+    const ok = globalShortcut.register(key, handler);
     if (!ok) console.warn("Failed to register hotkey:", key);
   }
 }
@@ -115,7 +189,7 @@ async function createWindow() {
   });
 
   mainWindow.once("ready-to-show", () => mainWindow?.show());
- mainWindow.on("close", (e) => {
+  mainWindow.on("close", (e) => {
     if (!isQuitting) {
       e.preventDefault();
       mainWindow?.hide();
@@ -201,7 +275,7 @@ async function startSidecars() {
     cwd: rustDir,
     stdio: "inherit",
     env: { ...process.env, PORT: String(RUST_PORT) },
-    stdio: "pipe", 
+    stdio: "pipe",
     windowsHide: true,
   });
 
@@ -384,10 +458,9 @@ powerMonitor.on("resume", () => {
   mainWindow?.webContents.send("system:resume");
 });
 
-
 // Cleanup
 app.on("before-quit", () => {
-   isQuitting = true;
+  isQuitting = true;
   pythonProcess?.kill();
   rustProcess?.kill();
 });

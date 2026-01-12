@@ -5183,6 +5183,7 @@ function fixResponseChunkedTransferBadEnding(request, errorCallback) {
 //#endregion
 //#region src/main.ts
 let mainWindow = null;
+let inputWindow = null;
 let pythonProcess = null;
 let rustProcess = null;
 let tray = null;
@@ -5191,7 +5192,6 @@ const PYTHON_TOKEN = "54321";
 const PYTHON_PORT = 8e3;
 const RUST_PORT = 5005;
 const CSP_NONCE = randomBytes(16).toString("base64");
-const HOTKEYS = ["CommandOrControl+Shift+Space"];
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 async function setupSessionSecurity() {
@@ -5245,8 +5245,60 @@ function createTray() {
 	tray.setContextMenu(menu);
 	tray.on("click", toggleWindow);
 }
+async function createInputWindow() {
+	if (inputWindow && !inputWindow.isDestroyed()) return;
+	try {
+		const { width } = __require("electron").screen.getPrimaryDisplay().workAreaSize;
+		inputWindow = new BrowserWindow({
+			width: 600,
+			height: 60,
+			x: Math.floor((width - 600) / 2),
+			y: 40,
+			frame: false,
+			transparent: true,
+			alwaysOnTop: true,
+			resizable: false,
+			movable: false,
+			skipTaskbar: true,
+			focusable: true,
+			show: false,
+			webPreferences: {
+				preload: path.join(__dirname, "preload.cjs"),
+				contextIsolation: true,
+				sandbox: true
+			}
+		});
+		inputWindow.on("close", (e$1) => {
+			e$1.preventDefault();
+			inputWindow?.hide();
+		});
+		inputWindow.on("blur", () => {
+			inputWindow?.hide();
+		});
+		if (process.env.NODE_ENV === "development") await inputWindow.loadURL("http://localhost:5173/command");
+		else if (process.env.VITE_DEV_SERVER_URL) await inputWindow.loadURL(process.env.VITE_DEV_SERVER_URL + "/command");
+		else await inputWindow.loadFile(path.join(__dirname, "../frontend/dist/index.html"), { search: "?route=command" });
+	} catch (err) {
+		console.error("Failed to create input window:", err);
+		if (inputWindow && !inputWindow.isDestroyed()) inputWindow.destroy();
+		inputWindow = null;
+		throw err;
+	}
+}
+async function toggleInputWindow() {
+	if (!inputWindow || inputWindow.isDestroyed()) await createInputWindow();
+	if (inputWindow.isVisible()) inputWindow.hide();
+	else {
+		inputWindow.show();
+		inputWindow.focus();
+	}
+}
+const HOTKEY_ACTIONS = {
+	"CommandOrControl+Shift+Space": toggleWindow,
+	"CommandOrControl+Shift+K": toggleInputWindow
+};
 function registerHotkeys() {
-	for (const key of HOTKEYS) if (!globalShortcut.register(key, toggleWindow)) console.warn("Failed to register hotkey:", key);
+	for (const [key, handler] of Object.entries(HOTKEY_ACTIONS)) if (!globalShortcut.register(key, handler)) console.warn("Failed to register hotkey:", key);
 }
 async function createWindow() {
 	await setupSessionSecurity();
@@ -5445,6 +5497,7 @@ app.on("will-quit", () => {
 	globalShortcut.unregisterAll();
 });
 app.whenReady().then(async () => {
+	app.setLoginItemSettings({ openAtLogin: true });
 	if (process.platform === "darwin") app.dock?.hide();
 	await createWindow();
 	createTray();
