@@ -12,3 +12,4 @@ pyautogui
 pycaw 
 comtypes
 psutil==7.2.1
+screen-brightness-control==0.25.0

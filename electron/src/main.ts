@@ -4,10 +4,9 @@ import { fileURLToPath } from "url";
 import { randomBytes } from "crypto";
 import path from "path";
 import fetch from "node-fetch";
+import fs from "fs";
 
 let mainWindow: BrowserWindow | null = null;
-
-let viteProcess: ChildProcess | null = null;
 let pythonProcess: ChildProcess | null = null;
 let rustProcess: ChildProcess | null = null;
 
@@ -80,68 +79,98 @@ async function createWindow() {
     );
   });
 
-  // Start both sidecars in sequence (PYTHON + RUST)
+  // Start sidecars
   await startSidecars();
   await checkHealth();
-}
-
-async function startFrontendDevServer() {
-  if (process.env.NODE_ENV !== "development") return;
-
-  const frontendDir = path.join(__dirname, "../../frontend");
-
-  console.log("🚀 Starting Vite dev server...");
-
-  viteProcess = spawn(
-    process.platform === "win32" ? "npm.cmd" : "npm",
-    ["run", "dev"],
-    {
-      cwd: frontendDir,
-      stdio: "inherit",
-      env: {
-        ...process.env,
-        BROWSER: "none", // prevent auto browser open
-      },
-    }
-  );
-
-  viteProcess.on("error", (err) => {
-    console.error("❌ Failed to start Vite:", err);
-  });
 }
 
 async function startSidecars() {
   const backendDir = path.join(__dirname, "../../backend");
   const rustDir = path.join(__dirname, "../../rust");
   const pythonPath = path.join(backendDir, "venv", "Scripts", "python.exe");
-  // const rustExe = path.join(rustDir, "target/release/rust.exe"); // umcomment this for prod build
   const rustExe = path.join(rustDir, "target/debug/rust.exe");
 
-  // DEBUG: Log the paths
-  console.log("Rust directory:", rustDir);
-  console.log("Looking for Rust executable at:", rustExe);
+  console.log("📂 Backend dir:", backendDir);
+  console.log("📂 Rust dir:", rustDir);
+  console.log("🔍 Looking for Rust exe:", rustExe);
 
-  // Check if file exists
-  const fs = require("fs");
+  // Verify Rust executable exists
   if (!fs.existsSync(rustExe)) {
-    console.error("ERROR: Rust executable not found at:", rustExe);
+    console.error("❌ Rust executable not found!");
     dialog.showErrorBox(
       "Rust Sidecar Missing",
-      `rust-llm-sidecar.exe not found at:\n${rustExe}\n\nPlease build it first.`
+      `rust.exe not found at:\n${rustExe}\n\nBuild it with: cargo build`
     );
     app.quit();
     return;
   }
 
-  // 1. Start Rust
+  // Verify model file exists
+  const modelPath = path.join(rustDir, "models", "mistral-7b-instruct-v0.2.Q4_K_S.gguf");
+  if (!fs.existsSync(modelPath)) {
+    console.error("❌ Model file not found!");
+    dialog.showErrorBox(
+      "Model Missing",
+      `Model not found at:\n${modelPath}\n\nPlease download the model first.`
+    );
+    app.quit();
+    return;
+  }
+
+  console.log("✅ Rust exe found");
+  console.log("✅ Model file found");
+
+  // 1. Start Rust Process
+  console.log("🚀 Starting Rust LLM server...");
   rustProcess = spawn(rustExe, [], {
     cwd: rustDir,
-    stdio: "pipe",
-    env: { ...process.env, PORT: String(RUST_PORT) },
+    stdio: ["ignore", "pipe", "pipe"], // Capture stdout and stderr
+    env: { 
+      ...process.env, 
+      PORT: String(RUST_PORT),
+      RUST_LOG: "info", // Enable Rust logging
+    },
     windowsHide: true,
   });
 
-  // 2. Start Python (Passing RUST_URL as env)
+  // Log Rust output
+  if (rustProcess.stdout) {
+    rustProcess.stdout.on("data", (data) => {
+      console.log(`[Rust] ${data.toString().trim()}`);
+    });
+  }
+
+  if (rustProcess.stderr) {
+    rustProcess.stderr.on("data", (data) => {
+      console.error(`[Rust Error] ${data.toString().trim()}`);
+    });
+  }
+
+  rustProcess.on("error", (err) => {
+    console.error("❌ Rust process error:", err);
+  });
+
+  rustProcess.on("exit", (code) => {
+    console.log(`Rust process exited with code ${code}`);
+  });
+
+  // Wait for Rust to be ready
+  console.log("⏳ Waiting for Rust server...");
+  for (let i = 0; i < 30; i++) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${RUST_PORT}/health`);
+      if (res.ok) {
+        console.log("✅ Rust server ready!");
+        break;
+      }
+    } catch (e) {
+      // Server not ready yet
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+
+  // 2. Start Python Process
+  console.log("🚀 Starting Python FastAPI server...");
   pythonProcess = spawn(
     pythonPath,
     [
@@ -152,6 +181,8 @@ async function startSidecars() {
       "127.0.0.1",
       "--port",
       String(PYTHON_PORT),
+      "--log-level",
+      "info",
     ],
     {
       cwd: backendDir,
@@ -162,93 +193,108 @@ async function startSidecars() {
         VIRTUAL_ENV: path.join(backendDir, "venv"),
         PATH: `${path.join(backendDir, "venv", "Scripts")};${process.env.PATH}`,
       },
-      // stdio: "inherit",
-      stdio: "pipe", // or "ignore" if you don’t need logs
-      windowsHide: true, // <-- hide CMD window
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     }
   );
 
-  // Wait for Python Healthcheck
-  for (let i = 0; i < 15; i++) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, {
-        headers: { "x-token": PYTHON_TOKEN },
-      });
-      if (res.ok) return;
-    } catch {}
-    await new Promise((r) => setTimeout(r, 500));
-  }
-}
-
-// Handler functions
-const fetchWithTimeout = async (url: string, options: any, timeout = 5000) => {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeout);
-  try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal,
+  // Log Python output
+  if (pythonProcess.stdout) {
+    pythonProcess.stdout.on("data", (data) => {
+      console.log(`[Python] ${data.toString().trim()}`);
     });
-    clearTimeout(id);
-    return response;
-  } catch (error) {
-    clearTimeout(id);
-    throw error;
   }
-};
 
-const checkHealth = async () => {
+  if (pythonProcess.stderr) {
+    pythonProcess.stderr.on("data", (data) => {
+      console.error(`[Python Error] ${data.toString().trim()}`);
+    });
+  }
+
+  pythonProcess.on("error", (err) => {
+    console.error("❌ Python process error:", err);
+  });
+
+  pythonProcess.on("exit", (code) => {
+    console.log(`Python process exited with code ${code}`);
+  });
+
+  // Wait for Python health check
+  console.log("⏳ Waiting for Python server...");
   for (let i = 0; i < 30; i++) {
     try {
       const res = await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, {
         headers: { "x-token": PYTHON_TOKEN },
       });
       if (res.ok) {
-        console.log("✅ Python backend ready");
-        return true;
+        console.log("✅ Python server ready!");
+        return;
       }
-    } catch (e) {}
+    } catch (e) {
+      // Server not ready yet
+    }
     await new Promise((r) => setTimeout(r, 1000));
   }
-  console.error("Python backend never came up");
 
+  console.error("❌ Python server failed to start");
+  dialog.showErrorBox(
+    "Server Start Failed",
+    "Python backend did not respond in time"
+  );
+}
+
+const checkHealth = async () => {
+  try {
+    const res = await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, {
+      headers: { "x-token": PYTHON_TOKEN },
+    });
+    if (res.ok) {
+      console.log("✅ Health check passed");
+      return true;
+    }
+  } catch (e) {
+    console.error("❌ Health check failed:", e);
+  }
   return false;
 };
 
-// IPC Handler
+// IPC Handlers
 ipcMain.handle("ai:request", async (_event, payload) => {
   const { target = "python", endpoint, method = "POST", body } = payload;
   const port = target === "rust" ? RUST_PORT : PYTHON_PORT;
 
   try {
-    const isPrediction =
-      endpoint.includes("predict") || endpoint.includes("run");
-    const isAgent = endpoint.includes("/agent/");
-    const timeout = isAgent ? 180000 : isPrediction ? 60000 : 5000;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 180000);
 
-    const res = await fetchWithTimeout(
-      `http://127.0.0.1:${port}${endpoint}`,
-      {
-        method,
-        headers: {
-          "Content-Type": "application/json",
-          "x-token": PYTHON_TOKEN,
-        },
-        body: body ? JSON.stringify(body) : undefined,
+    const res = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        "x-token": PYTHON_TOKEN,
       },
-      timeout
-    );
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
 
-    if (!res.ok) throw new Error(`Backend error: ${res.statusText}`);
+    clearTimeout(timeout);
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(`Backend error: ${res.statusText} - ${errorText}`);
+    }
+
     return await res.json();
   } catch (error: any) {
-    console.error(`IPC AI Request Failed [${endpoint}]:`, error.message);
+    console.error(`IPC Request Failed [${endpoint}]:`, error.message);
     return { error: error.message || "Request failed" };
   }
 });
 
 ipcMain.handle("ai:request-stream", async (event, payload) => {
   const { endpoint, method = "POST", body } = payload;
+
+  console.log(`📡 Stream request: ${endpoint}`);
 
   try {
     const response = await fetch(`http://127.0.0.1:${PYTHON_PORT}${endpoint}`, {
@@ -261,42 +307,53 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
       body: JSON.stringify(body),
     });
 
-    if (!response.ok) throw new Error(`Backend error: ${response.statusText}`);
-    if (!response.body) throw new Error("Response body is empty");
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Backend error: ${response.statusText} - ${errorText}`);
+    }
+
+    if (!response.body) {
+      throw new Error("Response body is empty");
+    }
+
+    console.log("✅ Stream connected");
 
     let buffer = "";
 
     response.body.on("data", (chunk) => {
       buffer += chunk.toString();
-      const events = buffer.split("\n\n");
-      buffer = events.pop() || "";
+      let boundary = buffer.indexOf("\n\n");
 
-      for (const evt of events) {
-        const line = evt.trim();
-        if (!line.startsWith("data:")) continue;
+      while (boundary !== -1) {
+        const evt = buffer.slice(0, boundary).trim();
+        buffer = buffer.slice(boundary + 2);
 
-        const jsonStr = line.slice(5).trim();
-        if (!jsonStr) continue;
-
-        try {
-          const parsed = JSON.parse(jsonStr);
-          event.sender.send("ai:stream-data", parsed);
-        } catch (err) {
-          console.error("Invalid SSE JSON:", jsonStr);
+        if (evt.startsWith("data:")) {
+          const jsonStr = evt.slice(5).trim();
+          try {
+            const parsed = JSON.parse(jsonStr);
+            event.sender.send("ai:stream-data", parsed);
+          } catch (e) {
+            console.warn("Failed to parse SSE data:", jsonStr);
+          }
         }
+        boundary = buffer.indexOf("\n\n");
       }
     });
 
     response.body.on("end", () => {
+      console.log("✅ Stream ended");
       event.sender.send("ai:stream-end");
     });
 
     response.body.on("error", (err: Error) => {
+      console.error("❌ Stream error:", err);
       event.sender.send("ai:stream-error", { error: err.message });
     });
 
     return { success: true };
   } catch (error: any) {
+    console.error("❌ Stream setup failed:", error.message);
     event.sender.send("ai:stream-error", { error: error.message });
     return { error: error.message };
   }
@@ -311,6 +368,7 @@ ipcMain.handle("dialog:openFolder", async () => {
 
 // Cleanup
 app.on("before-quit", () => {
+  console.log("🛑 Shutting down processes...");
   pythonProcess?.kill();
   rustProcess?.kill();
 });
