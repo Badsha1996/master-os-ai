@@ -125,7 +125,7 @@ class LLMClient:
             "prompt": prompt,
             "max_tokens": 2048,
             "temperature": 0.7,
-            "stop": ["</s>", "[INST]", "User:", "Observation:"]  # Stop before observations
+            "stop": ["</s>", "[INST]", "User:", "Observation:","Observation"]  # Stop before observations
         }
 
         max_retries = 3
