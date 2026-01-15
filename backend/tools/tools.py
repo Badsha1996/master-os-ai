@@ -331,3 +331,25 @@ def get_tools_description() -> str:
             desc += f"Examples: {', '.join(tool['examples'])}\n"
         desc += "\n"
     return desc
+
+def get_compact_tool_signatures() -> str:
+    """
+    Returns highly optimized, TypeScript-style signatures for Mistral.
+    Saves tokens and improves instruction adherence.
+    """
+    signatures = []
+    for tool in TOOL_SCHEMAS:
+        params = []
+        for name, desc in tool['parameters'].items():
+            # infer type from description or default to any
+            param_type = "string"
+            if "integer" in desc or "number" in desc:
+                param_type = "number"
+            params.append(f"{name}: {param_type}")
+        
+        param_str = ", ".join(params)
+        # Format: tool_name(param: type) -> description
+        sig = f"- {tool['name']}({param_str}): {tool['description']}"
+        signatures.append(sig)
+    
+    return "\n".join(signatures)

@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Optional, AsyncIterator
 
+from llm.react_agent import ReActAgent
 from llm.llm_client import LLMClient, CancelledException
 from utility.get_llm_client import get_llm_client
 from tools.tools import execute_tool, get_tools_description, TOOL_SCHEMAS
@@ -231,156 +232,373 @@ async def parse_react_response(stream_iter: AsyncIterator[str]) -> AsyncIterator
             logger.error(f"❌ Parse error: {e}")
             continue
 
+# @chat_router.post("/chat")
+# async def text_to_text(
+#     req: ChatInput, 
+#     request: Request, 
+#     llm: LLMClient = Depends(get_llm_client)
+# ):
+#     user_input = req.text
+#     agent = ReActAgent(llm)
+    
+#     async def response_generator():
+#         # The agent yields dicts. We convert to SSE string format for the frontend.
+#         async for event in agent.run(user_input, []):
+#             yield f"data: {json.dumps(event)}\n\n"
+
+#     return StreamingResponse(response_generator(), media_type="text/event-stream")
+
+# @chat_router.post("/stream")
+# async def text_to_text_stream(
+#     req: ChatInput, 
+#     request: Request, 
+#     llm: LLMClient = Depends(get_llm_client)
+# ):
+#     async def event_generator():
+#         # 1. Setup
+#         if not await ensure_model_loaded(llm):
+#             yield f"data: {json.dumps({'type': 'error', 'error': 'Model failed to load'})}\n\n"
+#             return
+
+#         yield f"data: {json.dumps({'type': 'status', 'status': 'starting'})}\n\n"
+        
+#         tools_desc = get_tools_description()
+#         # Initialize conversation with the System Prompt
+#         current_prompt = construct_react_prompt(req.text, tools_desc)
+        
+#         step_count = 0
+#         max_steps = 10
+#         keep_going = True
+
+#         try:
+#             while keep_going and step_count < max_steps:
+#                 step_count += 1
+#                 logger.info(f"🔄 ReAct Step {step_count}")
+
+#                 # Buffers for this specific step
+#                 buffer = ""
+#                 current_thought = ""
+#                 in_action_block = False
+#                 action_json_buffer = ""
+                
+#                 # We need to detect if the model stopped because it wants an observation
+#                 model_stopped_for_action = False
+
+#                 # 2. Stream from LLM
+#                 # CRITICAL: We pass stop=["Observation:"] to ensure the LLM pauses 
+#                 # so Python can execute the tool.
+#                 async for chunk_json in llm.stream(
+#                     current_prompt, 
+#                     req.context, 
+#                     # Stop exactly here
+#                 ):
+#                     if await request.is_disconnected():
+#                         raise CancelledException("Client disconnected")
+
+#                     try:
+#                         data = json.loads(chunk_json)
+#                         token = data.get("text", "")
+                        
+#                         buffer += token
+
+#                         # -- DETECT PHASES --
+                        
+#                         # Detect transition from Thought to Action
+#                         if "Action:" in buffer and not in_action_block:
+#                             in_action_block = True
+#                             # Send phase update to UI
+#                             yield f"data: {json.dumps({'type': 'phase', 'phase': 'action'})}\n\n"
+                            
+#                             # Clean the token if it contains the keyword
+#                             # (This helps prevent "Action:" appearing in the JSON buffer)
+#                             split_point = token.find("Action:")
+#                             if split_point != -1:
+#                                 # Add the part before Action: to thought
+#                                 current_thought += token[:split_point]
+#                                 # Add the part after Action: to action buffer
+#                                 action_json_buffer += token[split_point + len("Action:"):]
+#                                 token = "" # We handled this token manually
+                        
+#                         if in_action_block:
+#                             action_json_buffer += token
+#                             # We don't yield JSON tokens as "thought", we keep them hidden 
+#                             # or yield them as a separate type if you want the user to see raw JSON code.
+#                             # For now, let's yield them so the user sees the code typing out:
+#                             yield f"data: {json.dumps({'type': 'action_chunk', 'text': token})}\n\n"
+#                         else:
+#                             # It is a thought
+#                             current_thought += token
+#                             yield f"data: {json.dumps({'type': 'thought', 'text': token})}\n\n"
+
+#                     except json.JSONDecodeError:
+#                         continue
+
+#                 # -- END OF STREAM LOOP FOR THIS STEP --
+#                 # The model has stopped generating. Now we process what we have.
+
+#                 # 3. Check for Actions
+#                 # We look for the last occurrence of valid JSON in the buffer
+#                 action_match = re.search(r"(\{.*\})", action_json_buffer, re.DOTALL)
+                
+#                 if action_match:
+#                     action_str = action_match.group(1)
+#                     try:
+#                         action_data = json.loads(action_str)
+#                         tool_name = action_data.get("tool")
+#                         params = action_data.get("params", {})
+
+#                         # Send parsed action to UI (Make it look pretty)
+#                         yield f"data: {json.dumps({'type': 'action_parsed', 'tool': tool_name, 'params': params})}\n\n"
+
+#                         # --- EXECUTE TOOL ---
+#                         if tool_name == "final_answer":
+#                             answer = params.get("answer", "")
+#                             yield f"data: {json.dumps({'type': 'done', 'answer': answer})}\n\n"
+#                             keep_going = False
+#                         else:
+#                             # Execute real Python tool
+#                             observation = execute_tool(tool_name, params)
+                            
+#                             # Send Observation to UI
+#                             yield f"data: {json.dumps({'type': 'observation', 'text': observation})}\n\n"
+                            
+#                             # Append result to prompt for the next loop
+#                             # We reconstruct what the model generated + our observation
+#                             current_prompt += f"{buffer}\nObservation: {observation}\nThought:"
+
+#                     except json.JSONDecodeError:
+#                         logger.error(f"Invalid JSON from LLM: {action_str}")
+#                         # Force a retry or ask LLM to correct (simplified here: just stop)
+#                         yield f"data: {json.dumps({'type': 'error', 'error': 'LLM generated invalid JSON'})}\n\n"
+#                         keep_going = False
+#                 else:
+#                     # No action found. 
+#                     # If we are here, the model stopped but didn't output an action.
+#                     # It might be a direct answer or a hallucinated stop.
+#                     if not in_action_block and current_thought.strip():
+#                          # Treat as final answer if it just talked
+#                          yield f"data: {json.dumps({'type': 'done', 'answer': current_thought})}\n\n"
+#                     keep_going = False
+
+#             if step_count >= max_steps:
+#                  yield f"data: {json.dumps({'type': 'error', 'error': 'Max ReAct steps reached'})}\n\n"
+
+#         except CancelledException:
+#             logger.info("Request cancelled")
+#         except Exception as e:
+#             logger.error(f"Error in stream: {e}", exc_info=True)
+#             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+
+#     return StreamingResponse(
+#         event_generator(), 
+#         media_type="text/event-stream",
+#         headers={
+#             "Cache-Control": "no-cache", 
+#             "Connection": "keep-alive",
+#             "X-Accel-Buffering": "no" # Important for Nginx/Proxies to not buffer
+#         }
+#     )
+
+
 @chat_router.post("/stream")
-async def text_to_text_stream(
+async def modified_stream(
     req: ChatInput, 
     request: Request, 
     llm: LLMClient = Depends(get_llm_client)
 ):
+    """
+    Optimized streaming endpoint for Mistral 7B with ReAct reasoning.
+    Combines robust multi-step thinking with proper token management.
+    """
     async def event_generator():
-        # 1. Setup
+        # 1. Ensure model is ready
         if not await ensure_model_loaded(llm):
             yield f"data: {json.dumps({'type': 'error', 'error': 'Model failed to load'})}\n\n"
             return
 
         yield f"data: {json.dumps({'type': 'status', 'status': 'starting'})}\n\n"
         
-        tools_desc = get_tools_description()
-        # Initialize conversation with the System Prompt
-        current_prompt = construct_react_prompt(req.text, tools_desc)
+        # 2. Build initial prompt with Mistral format
+        from llm.prompt_engine import build_mistral_prompt
+        
+        conversation_history = [
+            {"role": "user", "content": req.text}
+        ]
         
         step_count = 0
-        max_steps = 10
-        keep_going = True
-
+        max_steps = 8  # Increased for complex multi-step tasks
+        
         try:
-            while keep_going and step_count < max_steps:
+            while step_count < max_steps:
                 step_count += 1
-                logger.info(f"🔄 ReAct Step {step_count}")
-
-                # Buffers for this specific step
-                buffer = ""
-                current_thought = ""
-                in_action_block = False
-                action_json_buffer = ""
+                logger.info(f"🔄 ReAct Step {step_count}/{max_steps}")
                 
-                # We need to detect if the model stopped because it wants an observation
-                model_stopped_for_action = False
-
-                # 2. Stream from LLM
-                # CRITICAL: We pass stop=["Observation:"] to ensure the LLM pauses 
-                # so Python can execute the tool.
+                # Build prompt for current step
+                prompt = build_mistral_prompt(conversation_history)
+                
+                # State tracking for this iteration
+                buffer = ""
+                thought_buffer = ""
+                action_buffer = ""
+                in_thought = True
+                in_action = False
+                action_detected = False
+                final_answer_detected = False
+                
+                # Phase notification
+                yield f"data: {json.dumps({'type': 'phase', 'phase': 'thinking'})}\n\n"
+                
+                # 3. Stream from LLM with smart stop sequences
                 async for chunk_json in llm.stream(
-                    current_prompt, 
-                    req.context, 
-                    # Stop exactly here
+                    prompt, 
+                    req.context,
                 ):
                     if await request.is_disconnected():
                         raise CancelledException("Client disconnected")
-
+                    
                     try:
                         data = json.loads(chunk_json)
                         token = data.get("text", "")
                         
+                        if not token:
+                            continue
+                        
                         buffer += token
-
-                        # -- DETECT PHASES --
                         
-                        # Detect transition from Thought to Action
-                        if "Action:" in buffer and not in_action_block:
-                            in_action_block = True
-                            # Send phase update to UI
-                            yield f"data: {json.dumps({'type': 'phase', 'phase': 'action'})}\n\n"
+                        # === THOUGHT PHASE ===
+                        if in_thought and not in_action:
+                            thought_buffer += token
                             
-                            # Clean the token if it contains the keyword
-                            # (This helps prevent "Action:" appearing in the JSON buffer)
-                            split_point = token.find("Action:")
-                            if split_point != -1:
-                                # Add the part before Action: to thought
-                                current_thought += token[:split_point]
-                                # Add the part after Action: to action buffer
-                                action_json_buffer += token[split_point + len("Action:"):]
-                                token = "" # We handled this token manually
-                        
-                        if in_action_block:
-                            action_json_buffer += token
-                            # We don't yield JSON tokens as "thought", we keep them hidden 
-                            # or yield them as a separate type if you want the user to see raw JSON code.
-                            # For now, let's yield them so the user sees the code typing out:
-                            yield f"data: {json.dumps({'type': 'action_chunk', 'text': token})}\n\n"
-                        else:
-                            # It is a thought
-                            current_thought += token
+                            # Check for transition to Action
+                            if "Action:" in buffer:
+                                in_thought = False
+                                in_action = True
+                                
+                                # Extract thought before "Action:"
+                                thought_match = re.search(r"Thought:\s*(.*?)(?=Action:|$)", buffer, re.DOTALL)
+                                if thought_match:
+                                    final_thought = thought_match.group(1).strip()
+                                    # Send any remaining thought text
+                                    remaining = final_thought[len(thought_buffer) - len(token):]
+                                    if remaining:
+                                        yield f"data: {json.dumps({'type': 'thought', 'text': remaining})}\n\n"
+                                
+                                yield f"data: {json.dumps({'type': 'phase', 'phase': 'action'})}\n\n"
+                                thought_buffer = ""
+                                continue
+                            
+                            # Check for Final Answer
+                            if "Final Answer:" in buffer:
+                                final_answer_detected = True
+                                # Extract everything after "Final Answer:"
+                                answer_match = re.search(r"Final Answer:\s*(.*)", buffer, re.DOTALL)
+                                if answer_match:
+                                    answer_text = answer_match.group(1).strip()
+                                    yield f"data: {json.dumps({'type': 'done', 'answer': answer_text})}\n\n"
+                                return
+                            
+                            # Stream thought tokens
                             yield f"data: {json.dumps({'type': 'thought', 'text': token})}\n\n"
-
+                        
+                        # === ACTION PHASE ===
+                        elif in_action:
+                            action_buffer += token
+                            
+                            # Try to parse complete Action block
+                            # Pattern: Action: tool_name\nAction Input: {...}
+                            action_pattern = re.search(
+                                r'Action:\s*(\w+)\s*Action Input:\s*(\{[^}]*\})', 
+                                buffer, 
+                                re.DOTALL
+                            )
+                            
+                            if action_pattern:
+                                tool_name = action_pattern.group(1).strip()
+                                params_str = action_pattern.group(2).strip()
+                                
+                                try:
+                                    params = json.loads(params_str)
+                                    action_detected = True
+                                    
+                                    logger.info(f"🔧 Tool: {tool_name} | Params: {params}")
+                                    
+                                    # Notify UI
+                                    yield f"data: {json.dumps({'type': 'action', 'tool': tool_name, 'params': params})}\n\n"
+                                    
+                                    # === EXECUTE TOOL ===
+                                    observation = execute_tool(tool_name, params)
+                                    logger.info(f"📊 Observation: {observation[:150]}...")
+                                    
+                                    # Send observation to UI
+                                    yield f"data: {json.dumps({'type': 'observation', 'text': observation})}\n\n"
+                                    
+                                    # Update conversation history
+                                    conversation_history.append({
+                                        "role": "assistant",
+                                        "content": buffer.strip()
+                                    })
+                                    conversation_history.append({
+                                        "role": "system",
+                                        "content": observation
+                                    })
+                                    
+                                    # Break to next iteration
+                                    break
+                                    
+                                except json.JSONDecodeError:
+                                    # Incomplete JSON, wait for more tokens
+                                    continue
+                            
+                            # Show action formation (optional, can be disabled)
+                            # yield f"data: {json.dumps({'type': 'action_chunk', 'text': token})}\n\n"
+                    
                     except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse chunk: {chunk_json[:100]}")
                         continue
-
-                # -- END OF STREAM LOOP FOR THIS STEP --
-                # The model has stopped generating. Now we process what we have.
-
-                # 3. Check for Actions
-                # We look for the last occurrence of valid JSON in the buffer
-                action_match = re.search(r"(\{.*\})", action_json_buffer, re.DOTALL)
                 
-                if action_match:
-                    action_str = action_match.group(1)
-                    try:
-                        action_data = json.loads(action_str)
-                        tool_name = action_data.get("tool")
-                        params = action_data.get("params", {})
-
-                        # Send parsed action to UI (Make it look pretty)
-                        yield f"data: {json.dumps({'type': 'action_parsed', 'tool': tool_name, 'params': params})}\n\n"
-
-                        # --- EXECUTE TOOL ---
-                        if tool_name == "final_answer":
-                            answer = params.get("answer", "")
+                # === END OF STREAM FOR THIS STEP ===
+                
+                # Handle cases where no action was detected
+                if not action_detected and not final_answer_detected:
+                    # Check if buffer contains Final Answer that we missed
+                    if "Final Answer:" in buffer:
+                        answer_match = re.search(r"Final Answer:\s*(.*)", buffer, re.DOTALL)
+                        if answer_match:
+                            answer = answer_match.group(1).strip()
                             yield f"data: {json.dumps({'type': 'done', 'answer': answer})}\n\n"
-                            keep_going = False
-                        else:
-                            # Execute real Python tool
-                            observation = execute_tool(tool_name, params)
-                            
-                            # Send Observation to UI
-                            yield f"data: {json.dumps({'type': 'observation', 'text': observation})}\n\n"
-                            
-                            # Append result to prompt for the next loop
-                            # We reconstruct what the model generated + our observation
-                            current_prompt += f"{buffer}\nObservation: {observation}\nThought:"
-
-                    except json.JSONDecodeError:
-                        logger.error(f"Invalid JSON from LLM: {action_str}")
-                        # Force a retry or ask LLM to correct (simplified here: just stop)
-                        yield f"data: {json.dumps({'type': 'error', 'error': 'LLM generated invalid JSON'})}\n\n"
-                        keep_going = False
-                else:
-                    # No action found. 
-                    # If we are here, the model stopped but didn't output an action.
-                    # It might be a direct answer or a hallucinated stop.
-                    if not in_action_block and current_thought.strip():
-                         # Treat as final answer if it just talked
-                         yield f"data: {json.dumps({'type': 'done', 'answer': current_thought})}\n\n"
-                    keep_going = False
-
-            if step_count >= max_steps:
-                 yield f"data: {json.dumps({'type': 'error', 'error': 'Max ReAct steps reached'})}\n\n"
-
+                            return
+                    
+                    # Model stopped without clear action/answer
+                    # Treat buffer as direct response
+                    clean_buffer = buffer.replace("Thought:", "").strip()
+                    if clean_buffer:
+                        yield f"data: {json.dumps({'type': 'done', 'answer': clean_buffer})}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'error', 'error': 'Model response incomplete'})}\n\n"
+                    return
+            
+            # Max steps reached
+            logger.warning(f"⚠️ Max steps ({max_steps}) reached")
+            yield f"data: {json.dumps({'type': 'done', 'answer': 'I apologize, but I reached my reasoning limit. Could you rephrase your request?'})}\n\n"
+        
         except CancelledException:
-            logger.info("Request cancelled")
+            logger.info("⚠️ Generation cancelled by user")
+            yield f"data: {json.dumps({'type': 'cancelled'})}\n\n"
+        
         except Exception as e:
-            logger.error(f"Error in stream: {e}", exc_info=True)
+            logger.error(f"❌ Stream error: {e}", exc_info=True)
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
-
+    
     return StreamingResponse(
         event_generator(), 
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache", 
+            "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no" # Important for Nginx/Proxies to not buffer
+            "X-Accel-Buffering": "no"
         }
     )
+
 
 @chat_router.post("/cancel")
 async def cancel_generation(llm: LLMClient = Depends(get_llm_client)):
