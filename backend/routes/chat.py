@@ -5,11 +5,11 @@ import asyncio
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, AsyncIterator
 
 from llm.llm_client import LLMClient, CancelledException
 from utility.get_llm_client import get_llm_client
-from tools.tools import execute_action
+from tools.tools import execute_tool, get_tools_description, TOOL_SCHEMAS
 
 logger = logging.getLogger("chat")
 
@@ -33,7 +33,6 @@ async def ensure_model_loaded(llm: LLMClient, max_retries: int = 3) -> bool:
             logger.warning(f"⚠️ Model not loaded. Loading... (Attempt {attempt + 1}/{max_retries})")
             await llm.load_model(gpu_layers=99)
             
-            # Verify load succeeded
             health = await llm.health_check()
             if health.get("model_loaded"):
                 logger.info("✅ Model loaded successfully")
@@ -42,9 +41,195 @@ async def ensure_model_loaded(llm: LLMClient, max_retries: int = 3) -> bool:
         except Exception as e:
             logger.error(f"❌ Load attempt {attempt + 1} failed: {e}")
             if attempt < max_retries - 1:
-                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                await asyncio.sleep(2 ** attempt)
             
     return False
+
+def construct_react_prompt(user_query: str, tools_desc: str, history: list = []) -> str:
+    """
+    Construct a ReAct prompt for the LLM.
+    Format: Thought -> Action -> Observation loop until Final Answer
+    """
+    
+    system_prompt = f"""You are Master-OS (MOS), a helpful AI assistant that can use tools to help users.
+
+{tools_desc}
+
+CRITICAL INSTRUCTIONS - YOU MUST FOLLOW THIS FORMAT EXACTLY:
+
+You MUST think step-by-step using this format:
+
+Thought: [Your reasoning about what to do next]
+Action: {{"tool": "tool_name", "params": {{"param1": "value1"}}}}
+Observation: [You will receive the tool result here]
+
+After receiving observations, continue thinking:
+Thought: [Analyze the observation and decide next action]
+Action: {{"tool": "another_tool", "params": {{}}}}
+Observation: [Tool result]
+
+When you have enough information, provide the final answer:
+Thought: I now have all the information needed
+Action: {{"tool": "final_answer", "params": {{"answer": "Your complete response to the user"}}}}
+
+IMPORTANT RULES:
+1. Always start with a Thought
+2. Each Action must be valid JSON with "tool" and "params"
+3. Wait for Observation before next Thought
+4. Use final_answer tool when ready to respond
+5. Be conversational and helpful in your final answer
+
+EXAMPLES:
+
+User: "I'm feeling sad, play some music and dim my screen"
+
+Thought: The user is feeling sad and wants two things: music and dimmed screen. I should first play calming music, then adjust brightness.
+Action: {{"tool": "play_spotify", "params": {{"mood": "sad"}}}}
+Observation: Opened Spotify searching for 'sad' playlists
+Thought: Good, music is playing. Now I'll dim the screen to help them relax.
+Action: {{"tool": "set_brightness", "params": {{"value": 30}}}}
+Observation: Successfully set screen brightness to 30%
+Thought: Both tasks completed successfully. I should provide a caring response.
+Action: {{"tool": "final_answer", "params": {{"answer": "I've opened Spotify with some calming music for you, and dimmed your screen to 30%. Take care of yourself. If you need anything else, I'm here."}}}}
+
+User: "What time is it?"
+
+Thought: User wants to know the current time. I'll use the get_current_time tool.
+Action: {{"tool": "get_current_time", "params": {{}}}}
+Observation: Current time: Monday, January 15, 2026 at 02:30 PM
+Thought: I have the time information now.
+Action: {{"tool": "final_answer", "params": {{"answer": "It's currently Monday, January 15, 2026 at 2:30 PM."}}}}
+
+User: "Tell me a joke"
+
+Thought: User wants a joke. This doesn't require any tools, I can respond directly.
+Action: {{"tool": "final_answer", "params": {{"answer": "Why don't scientists trust atoms? Because they make up everything! 😄"}}}}
+
+Now respond to: {user_query}
+"""
+
+    # If there's conversation history, append it
+    if history:
+        system_prompt += "\n\nPrevious conversation:\n"
+        for entry in history:
+            system_prompt += f"{entry}\n"
+    
+    return system_prompt + "\nThought:"
+
+async def parse_react_response(stream_iter: AsyncIterator[str]) -> AsyncIterator[dict]:
+    """
+    Parse streaming tokens and extract Thought/Action/Observation structure.
+    Yields structured events to frontend.
+    """
+    buffer = ""
+    current_thought = ""
+    in_thought = False
+    in_action = False
+    # Track if we have entered any specific phase yet
+    has_started_structure = False 
+    
+    async for chunk_json in stream_iter:
+        try:
+            data = json.loads(chunk_json)
+            token = data.get("text", "")
+            
+            if not token:
+                continue
+            
+            buffer += token
+            
+            # --- FAILSAFE: Detect if model is just talking (No Thought/Action structure) ---
+            # If we have a reasonable amount of text (e.g., 20 chars) and haven't seen 
+            # "Thought:" or "Action:", assume it's a direct response.
+            if not has_started_structure and len(buffer) > 20:
+                if "Thought:" not in buffer and "Action:" not in buffer:
+                    # Flush buffer as a standard answer part
+                    yield {"type": "done", "answer": buffer} 
+                    # Note: Ideally you stream this, but for simplicity we yield what we have
+                    # and let the next chunks append to 'answer' in the frontend if you adjust it,
+                    # or better: treating it as a "thought" effectively communicates it's processing
+                    # but for this specific ReAct parser, let's treat it as a final answer stream.
+                    
+                    # Actually, the cleaner way for your UI:
+                    # If it's just talking, treat it as a final answer update (stream it).
+                    # Your UI expects "done" to be the *end*, so we need a new type or 
+                    # just yield "observation" or "thought" as fallback.
+                    
+                    # BEST APPROACH for current UI: Treat rogue text as "Thought" 
+                    # so the user at least sees it, OR modify UI to handle "answer_part".
+                    # Let's try to detect the start of a Thought late.
+                    pass
+
+            # 1. Detect Thought
+            if "Thought:" in buffer and not in_thought:
+                in_thought = True
+                has_started_structure = True
+                current_thought = ""
+                yield {"type": "phase", "phase": "thinking"}
+            
+            if in_thought:
+                # Extract thought content
+                thought_match = re.search(r"Thought:\s*(.*?)(?=Action:|$)", buffer, re.DOTALL)
+                if thought_match:
+                    thought_text = thought_match.group(1).strip()
+                    if thought_text != current_thought:
+                        new_chunk = thought_text[len(current_thought):]
+                        current_thought = thought_text
+                        yield {"type": "thought", "text": new_chunk}
+                
+                # Check if Action is starting
+                if "Action:" in buffer:
+                    in_thought = False
+                    in_action = True
+                    yield {"type": "phase", "phase": "action"}
+            
+            # 2. Detect Action
+            if in_action:
+                # Try to extract complete Action JSON
+                # More robust Action detection
+                action_match = re.search(r"Action:.*?(\{.*\})", buffer, re.DOTALL)
+                if action_match:
+                    try:
+                        action_json = action_match.group(1)
+                        action_data = json.loads(action_json)
+                        
+                        tool_name = action_data.get("tool")
+                        params = action_data.get("params", {})
+                        
+                        logger.info(f"🔧 Executing tool: {tool_name}")
+                        yield {"type": "action", "tool": tool_name, "params": params}
+                        
+                        # Execute tool
+                        observation = execute_tool(tool_name, params)
+                        
+                        logger.info(f"📊 Observation: {observation[:100]}...")
+                        yield {"type": "observation", "text": observation}
+                        
+                        # Clear buffer after action to keep it clean for next loop
+                        buffer = "" 
+                        in_action = False
+                        
+                        # Check if this was final_answer
+                        if tool_name == "final_answer":
+                            yield {"type": "done", "answer": params.get("answer", "")}
+                            return
+                        
+                    except json.JSONDecodeError as e:
+                        # JSON might be incomplete (streaming), just wait for more tokens
+                        continue
+            
+            # 3. Handle "Rogue" Output (Model ignores instructions and just talks)
+            if not has_started_structure and not in_thought and not in_action:
+                # If the buffer is getting long and doesn't look like it's starting a thought...
+                # We just stream it as a "thought" so the user sees raw output, 
+                # OR we break and assume it's the answer. 
+                # A simple trick: Just yield the token as a 'thought' if we are not in a strict block yet.
+                # This makes the "Thinking" box show the raw response, which is better than empty.
+                yield {"type": "thought", "text": token}
+
+        except Exception as e:
+            logger.error(f"❌ Parse error: {e}")
+            continue
 
 @chat_router.post("/stream")
 async def text_to_text_stream(
@@ -52,165 +237,120 @@ async def text_to_text_stream(
     request: Request, 
     llm: LLMClient = Depends(get_llm_client)
 ):
-    logger.info(f"🎯 MOS Processing: '{req.text[:60]}...'")
-
     async def event_generator():
-        # Ensure model is loaded before streaming
+        # 1. Setup
         if not await ensure_model_loaded(llm):
-            yield f"data: {json.dumps({'type': 'error', 'error': 'Failed to load model after multiple attempts'})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'error': 'Model failed to load'})}\n\n"
             return
 
-        full_response = ""
-        thinking_content = ""
-        response_content = ""
-        action_buffer = ""
+        yield f"data: {json.dumps({'type': 'status', 'status': 'starting'})}\n\n"
         
-        in_thinking = False
-        in_action = False
-        thinking_complete = False
+        # 2. Prepare Prompt
+        tools_desc = get_tools_description()
+        # Initialize the conversation history string
+        current_prompt = construct_react_prompt(req.text, tools_desc)
         
-        logger.info("🚀 Starting event generator")
-        
+        step_count = 0
+        max_steps = 10
+        keep_going = True
+
         try:
-            # Send initial status
-            yield f"data: {json.dumps({'type': 'status', 'status': 'thinking'})}\n\n"
-            
-            logger.info("📡 Beginning token stream...")
-            token_count = 0
-            
-            async for chunk_json in llm.stream(req.text, req.context):
-                if await request.is_disconnected():
-                    logger.warning("Client disconnected")
-                    break
-                
-                try:
-                    data = json.loads(chunk_json)
-                    token = data.get("text", "")
-                    
-                    if not token:
-                        logger.debug("Received empty token, skipping")
-                        continue
-                    
-                    token_count += 1
-                    if token_count % 10 == 0:
-                        logger.info(f"Received {token_count} tokens...")
-                    
-                    logger.debug(f"Token received: '{token}' (full so far: {len(full_response)} chars)")
-                        
-                    full_response += token
+            while keep_going and step_count < max_steps:
+                step_count += 1
+                logger.info(f"🔄 ReAct Step {step_count}")
 
-                    # === THINKING BLOCK PARSING ===
-                    if "<thinking>" in full_response and not in_thinking:
-                        in_thinking = True
-                        thinking_content = ""
-                        yield f"data: {json.dumps({'type': 'phase', 'phase': 'thinking'})}\n\n"
-                    
-                    if in_thinking and not thinking_complete:
-                        if "</thinking>" in full_response:
-                            # Extract complete thinking block
-                            match = re.search(r"<thinking>(.*?)</thinking>", full_response, re.DOTALL)
-                            if match:
-                                thinking_content = match.group(1).strip()
-                                logger.info(f"📝 Thinking complete: {thinking_content[:100]}...")
-                                yield f"data: {json.dumps({'type': 'thinking', 'content': thinking_content})}\n\n"
-                                in_thinking = False
-                                thinking_complete = True
-                                yield f"data: {json.dumps({'type': 'phase', 'phase': 'responding'})}\n\n"
+                # Flags for the current streaming pass
+                current_thought = ""
+                current_action_buffer = ""
+                in_action = False
+                action_performed = False
+
+                # 3. Stream from LLM
+                # We stream until the model stops (hit 'Observation:' or 'Final Answer')
+                async for chunk_json in llm.stream(current_prompt, req.context):
+                    if await request.is_disconnected():
+                        raise CancelledException("Client disconnected")
+
+                    try:
+                        data = json.loads(chunk_json)
+                        token = data.get("text", "")
+                        
+                        # -- BUFFERING LOGIC --
+                        if "Action:" in token or in_action:
+                            in_action = True
+                            current_action_buffer += token
+                            # Send phase change if just starting
+                            if "Action:" in token:
+                                yield f"data: {json.dumps({'type': 'phase', 'phase': 'action'})}\n\n"
                         else:
-                            # Stream thinking tokens in real-time
-                            thinking_match = re.search(r"<thinking>(.*?)$", full_response, re.DOTALL)
-                            if thinking_match:
-                                current_thinking = thinking_match.group(1).strip()
-                                if current_thinking != thinking_content:
-                                    new_chunk = current_thinking[len(thinking_content):]
-                                    thinking_content = current_thinking
-                                    logger.debug(f"Thinking chunk: '{new_chunk}'")
-                                    yield f"data: {json.dumps({'type': 'thinking_chunk', 'text': new_chunk})}\n\n"
+                            # It's a Thought (or random chatter)
+                            # Only yield if it's not part of the 'Action:' keyword
+                            yield f"data: {json.dumps({'type': 'thought', 'text': token})}\n\n"
+                            current_thought += token
 
-                    # === ACTION BLOCK PARSING ===
-                    if "<action>" in full_response and not in_action:
-                        in_action = True
-                        action_buffer = ""
-                        yield f"data: {json.dumps({'type': 'phase', 'phase': 'executing'})}\n\n"
-                    
-                    if in_action:
-                        if "</action>" in full_response:
-                            # Extract and execute action
-                            match = re.search(r"<action>(.*?)</action>", full_response, re.DOTALL)
-                            if match:
-                                action_json_str = match.group(1).strip()
-                                try:
-                                    action_data = json.loads(action_json_str)
-                                    tool_name = action_data.get("tool")
-                                    params = action_data.get("params", {})
-                                    
-                                    logger.info(f"🔧 Executing: {tool_name} with {params}")
-                                    
-                                    # Execute the tool
-                                    result = execute_action(tool_name, params)
-                                    
-                                    # Send execution result
-                                    yield f"data: {json.dumps({'type': 'action_result', 'tool': tool_name, 'params': params, 'result': str(result)})}\n\n"
-                                    
-                                except json.JSONDecodeError as e:
-                                    logger.error(f"❌ Action JSON parse error: {e}")
-                                    yield f"data: {json.dumps({'type': 'action_error', 'error': f'Invalid action format: {e}'})}\n\n"
-                                except Exception as e:
-                                    logger.error(f"❌ Action execution error: {e}")
-                                    yield f"data: {json.dumps({'type': 'action_error', 'error': str(e)})}\n\n"
-                                
-                                in_action = False
-                                action_buffer = ""
+                        # -- ACTION DETECTION --
+                        # Check if we have a full action JSON in the buffer
+                        action_match = re.search(r"Action:\s*(\{.*?\})", current_action_buffer, re.DOTALL)
+                        if action_match:
+                            action_json = action_match.group(1)
+                            try:
+                                action_data = json.loads(action_json)
+                                tool_name = action_data.get("tool")
+                                params = action_data.get("params", {})
 
-                    # === RESPONSE TEXT STREAMING ===
-                    if thinking_complete:
-                        # Extract clean response (no tags)
-                        clean_text = full_response
-                        
-                        # Remove thinking block
-                        clean_text = re.sub(r"<thinking>.*?</thinking>", "", clean_text, flags=re.DOTALL)
-                        
-                        # Remove action blocks
-                        clean_text = re.sub(r"<action>.*?</action>", "", clean_text, flags=re.DOTALL)
-                        
-                        clean_text = clean_text.strip()
-                        
-                        # Stream new response content
-                        if clean_text != response_content:
-                            new_chunk = clean_text[len(response_content):]
-                            if new_chunk:
-                                response_content = clean_text
-                                logger.debug(f"Response chunk: '{new_chunk}'")
-                                yield f"data: {json.dumps({'type': 'response', 'text': new_chunk})}\n\n"
+                                # Yield action to UI
+                                yield f"data: {json.dumps({'type': 'action', 'tool': tool_name, 'params': params})}\n\n"
 
-                except json.JSONDecodeError as e:
-                    logger.error(f"❌ Chunk parse error: {e}")
-                    continue
-                except Exception as e:
-                    logger.error(f"❌ Processing error: {e}")
-                    continue
+                                # --- EXECUTION ---
+                                if tool_name == "final_answer":
+                                    answer = params.get("answer", "")
+                                    yield f"data: {json.dumps({'type': 'done', 'answer': answer})}\n\n"
+                                    keep_going = False # Stop the outer loop
+                                    action_performed = True
+                                    break # Stop the inner stream loop
+                                else:
+                                    # Regular Tool
+                                    observation = execute_tool(tool_name, params)
+                                    yield f"data: {json.dumps({'type': 'observation', 'text': observation})}\n\n"
+                                    
+                                    # Update Prompt for next loop iteration
+                                    # We append what the model generated + the observation
+                                    current_prompt += f"{current_thought}{current_action_buffer}\nObservation: {observation}\nThought:"
+                                    
+                                    action_performed = True
+                                    break # Stop inner stream, restart outer loop with new prompt
 
-            # Send completion signal
-            logger.info(f"✅ Stream completed: {token_count} tokens total")
-            logger.info(f"Final response length: {len(response_content)} chars")
-            yield f"data: {json.dumps({'type': 'done', 'thinking': thinking_content, 'response': response_content})}\n\n"
-            logger.info("✅ Stream completed successfully")
+                            except json.JSONDecodeError:
+                                # JSON incomplete, keep streaming
+                                pass
+
+                    except json.JSONDecodeError:
+                        continue
+
+                # End of Stream Loop
+                
+                # If the stream finished naturally but we didn't execute an action,
+                # it implies the model just stopped talking or failed to output valid JSON.
+                if not action_performed and keep_going:
+                    # If we have a thought but no action, maybe the model is waiting?
+                    # Or it hallucinated a stop. For now, we assume it's done.
+                    if current_thought.strip():
+                         yield f"data: {json.dumps({'type': 'done', 'answer': current_thought})}\n\n"
+                    break
+
+            if step_count >= max_steps:
+                 yield f"data: {json.dumps({'type': 'error', 'error': 'Max ReAct steps reached'})}\n\n"
 
         except CancelledException:
-            logger.warning("⚠️ Generation cancelled by user")
-            yield f"data: {json.dumps({'type': 'cancelled'})}\n\n"
+            logger.info("Request cancelled")
         except Exception as e:
-            logger.error(f"❌ Stream error: {e}", exc_info=True)
+            logger.error(f"Error in stream: {e}", exc_info=True)
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
 
     return StreamingResponse(
         event_generator(), 
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive"
-        }
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
     )
 
 @chat_router.post("/cancel")

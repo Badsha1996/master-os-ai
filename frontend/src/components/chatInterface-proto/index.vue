@@ -1,345 +1,564 @@
-<script setup lang="ts">
-import { ref, onUnmounted } from 'vue';
-
-interface SystemAction {
-  tool: string;
-  params: Record<string, any>;
-  result: string;
-  id: number;
-  timestamp: string;
-}
-
-interface AgentState {
-  thinking: string;
-  response: string;
-  actions: SystemAction[];
-  phase: 'idle' | 'thinking' | 'executing' | 'responding' | 'error';
-  error?: string;
-}
-
-const inputQuery = ref('');
-const agentState = ref<AgentState>({ 
-  thinking: '', 
-  response: '', 
-  actions: [], 
-  phase: 'idle' 
-});
-
-const isProcessing = ref(false);
-
-onUnmounted(() => {
-  window.electronAPI.removeAllStreamListeners();
-});
-
-const startChat = async () => {
-  if (!inputQuery.value.trim() || isProcessing.value) return;
-
-  // Reset state for new request
-  agentState.value = { 
-    thinking: '', 
-    response: '', 
-    actions: [], 
-    phase: 'thinking',
-    error: undefined
-  };
-  
-  isProcessing.value = true;
-  window.electronAPI.removeAllStreamListeners();
-
-  // Listen for stream events
-  window.electronAPI.on('ai:stream-data', (payload: any) => {
-    const { type } = payload;
-
-    switch (type) {
-      case 'status':
-        console.log('Status:', payload.status);
-        break;
-
-      case 'phase':
-        agentState.value.phase = payload.phase;
-        break;
-
-      case 'thinking':
-        // Complete thinking content received
-        agentState.value.thinking = payload.content;
-        break;
-
-      case 'thinking_chunk':
-        // Incremental thinking update
-        agentState.value.thinking += payload.text;
-        break;
-
-      case 'action_result':
-        // Tool execution completed
-        agentState.value.actions.push({
-          tool: payload.tool,
-          params: payload.params || {},
-          result: payload.result,
-          id: Date.now(),
-          timestamp: new Date().toLocaleTimeString()
-        });
-        break;
-
-      case 'action_error':
-        console.error('Action error:', payload.error);
-        agentState.value.actions.push({
-          tool: 'error',
-          params: {},
-          result: `Error: ${payload.error}`,
-          id: Date.now(),
-          timestamp: new Date().toLocaleTimeString()
-        });
-        break;
-
-      case 'response':
-        // Final response text streaming
-        agentState.value.response += payload.text;
-        agentState.value.phase = 'responding';
-        break;
-
-      case 'done':
-        agentState.value.phase = 'idle';
-        isProcessing.value = false;
-        console.log('✅ Generation complete');
-        break;
-
-      case 'cancelled':
-        agentState.value.phase = 'idle';
-        isProcessing.value = false;
-        agentState.value.error = 'Generation cancelled';
-        break;
-
-      case 'error':
-        agentState.value.phase = 'error';
-        isProcessing.value = false;
-        agentState.value.error = payload.error;
-        console.error('Stream error:', payload.error);
-        break;
-    }
-  });
-
-  window.electronAPI.on('ai:stream-error', (err: any) => {
-    agentState.value.phase = 'error';
-    agentState.value.error = err.error || 'Unknown error';
-    isProcessing.value = false;
-  });
-
-  window.electronAPI.on('ai:stream-end', () => {
-    if (agentState.value.phase !== 'error') {
-      agentState.value.phase = 'idle';
-    }
-    isProcessing.value = false;
-  });
-
-  try {
-    await window.electronAPI.chat.stream(inputQuery.value);
-    inputQuery.value = '';
-  } catch (err: any) {
-    agentState.value.phase = 'error';
-    agentState.value.error = err.message || 'Failed to start stream';
-    isProcessing.value = false;
-  }
-};
-
-const cancelGeneration = async () => {
-  try {
-    await window.electronAPI.invoke('ai:request', {
-      endpoint: '/api/chat/cancel',
-      method: 'POST'
-    });
-    agentState.value.phase = 'idle';
-    isProcessing.value = false;
-  } catch (err) {
-    console.error('Cancel failed:', err);
-  }
-};
-
-const getPhaseDisplay = () => {
-  switch (agentState.value.phase) {
-    case 'thinking': return '🧠 Thinking...';
-    case 'executing': return '⚙️ Executing...';
-    case 'responding': return '💬 Responding...';
-    case 'error': return '❌ Error';
-    default: return '✓ Ready';
-  }
-};
-
-const getPhaseColor = () => {
-  switch (agentState.value.phase) {
-    case 'thinking': return 'bg-blue-50 text-blue-700 border-blue-200';
-    case 'executing': return 'bg-purple-50 text-purple-700 border-purple-200';
-    case 'responding': return 'bg-green-50 text-green-700 border-green-200';
-    case 'error': return 'bg-red-50 text-red-700 border-red-200';
-    default: return 'bg-gray-50 text-gray-700 border-gray-200';
-  }
-};
-</script>
-
 <template>
-  <div class="max-w-5xl mx-auto p-6 font-sans pb-40">
-    <!-- Header -->
-    <div class="mb-8 flex items-center justify-between">
-      <div>
-        <h1 class="text-2xl font-bold text-gray-900">Master-OS</h1>
-        <p class="text-xs text-gray-500 uppercase tracking-widest mt-1">Neural Orchestrator v2.0</p>
-      </div>
-      <div :class="['px-4 py-2 rounded-full text-xs font-bold flex items-center gap-2 border transition-all', getPhaseColor()]">
-        <span v-if="agentState.phase !== 'idle'" class="h-2 w-2 bg-current rounded-full animate-pulse"></span>
-        <span v-else class="h-2 w-2 bg-current rounded-full"></span>
-        {{ getPhaseDisplay() }}
+  <div class="chat-container">
+    <div class="chat-header">
+      <div class="header-content">
+        <h1>🤖 Master-OS</h1>
+        <div class="status-badge" :class="statusClass">
+          <span class="status-dot"></span>
+          {{ statusText }}
+        </div>
       </div>
     </div>
 
-    <!-- Error Display -->
-    <div v-if="agentState.error" class="mb-4 bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl">
-      <div class="flex items-center gap-2">
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-        </svg>
-        <span class="font-semibold">Error:</span>
-        <span>{{ agentState.error }}</span>
-      </div>
-    </div>
+    <div class="messages-container" ref="messagesContainer">
+      <div v-for="(msg, idx) in messages" :key="idx" class="message-wrapper">
+        
+        <div v-if="msg.role === 'user'" class="message user-message">
+          <div class="message-content">{{ msg.content }}</div>
+        </div>
 
-    <!-- Thinking Block -->
-    <div v-if="agentState.thinking" class="mb-6 animate-in fade-in slide-in-from-top-4 duration-300">
-      <div class="bg-slate-900 rounded-xl p-5 shadow-xl border border-slate-700">
-        <div class="flex items-center gap-2 mb-3">
-          <div class="flex gap-1">
-            <div class="w-2 h-2 rounded-full bg-red-500/60"></div>
-            <div class="w-2 h-2 rounded-full bg-yellow-500/60"></div>
-            <div class="w-2 h-2 rounded-full bg-green-500/60"></div>
+        <div v-else class="message assistant-message">
+          
+          <div v-if="msg.thoughts && msg.thoughts.length > 0" class="react-section thoughts">
+            <div class="section-header">
+              <span class="icon">💭</span>
+              <span class="title">Thinking Process</span>
+            </div>
+            <div class="section-content">
+              <div v-for="(thought, tidx) in msg.thoughts" :key="tidx" class="thought-item">
+                {{ thought }}
+              </div>
+            </div>
           </div>
-          <span class="text-[10px] text-slate-400 font-mono ml-2 uppercase tracking-wider">Reasoning Engine</span>
-        </div>
-        <p class="text-sm font-mono text-blue-300 leading-relaxed whitespace-pre-wrap">
-          {{ agentState.thinking }}<span v-if="agentState.phase === 'thinking'" class="animate-pulse ml-1">▋</span>
-        </p>
-      </div>
-    </div>
 
-    <!-- Actions Block -->
-    <div v-if="agentState.actions.length > 0" class="space-y-3 mb-6">
-      <div v-for="action in agentState.actions" :key="action.id" 
-           :class="['border px-5 py-4 rounded-xl flex items-start gap-4 animate-in slide-in-from-left-4 duration-300',
-                    action.tool === 'error' ? 'bg-red-50 border-red-200' : 'bg-emerald-50 border-emerald-200']">
-        <div :class="['p-2 rounded-lg flex-shrink-0', action.tool === 'error' ? 'bg-red-500' : 'bg-emerald-500']">
-          <svg v-if="action.tool !== 'error'" class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path>
-          </svg>
-          <svg v-else class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-          </svg>
-        </div>
-        <div class="flex-1 min-w-0">
-          <div class="flex items-baseline gap-2 mb-1">
-            <p :class="['text-[10px] uppercase font-bold tracking-wider', 
-                       action.tool === 'error' ? 'text-red-600' : 'text-emerald-600']">
-              {{ action.tool }} 
-            </p>
-            <span class="text-[9px] text-gray-400">{{ action.timestamp }}</span>
+          <div v-if="msg.actions && msg.actions.length > 0" class="react-section actions">
+            <div class="section-header">
+              <span class="icon">⚡</span>
+              <span class="title">Tool Executions</span>
+            </div>
+            <div class="section-content">
+              <div v-for="(action, aidx) in msg.actions" :key="aidx" class="action-item">
+                <div class="action-header">
+                  <span class="tool-name">{{ action.tool }}</span>
+                  <span class="tool-status" v-if="action.output">✅</span>
+                  <span class="tool-status loading" v-else>⏳</span>
+                </div>
+                
+                <div class="action-params" v-if="Object.keys(action.params).length">
+                  <code>{{ formatParams(action.params) }}</code>
+                </div>
+
+                <div v-if="action.output" class="action-observation">
+                  <span class="obs-label">Result:</span>
+                  <span class="obs-content">{{ action.output }}</span>
+                </div>
+              </div>
+            </div>
           </div>
-          <p v-if="Object.keys(action.params).length > 0" class="text-xs text-gray-600 mb-1 font-mono">
-            {{ JSON.stringify(action.params) }}
-          </p>
-          <p :class="['text-sm font-medium break-words', action.tool === 'error' ? 'text-red-800' : 'text-emerald-800']">
-            {{ action.result }}
-          </p>
+
+          <div v-if="msg.answer" class="react-section answer">
+            <div class="section-header">
+              <span class="icon">✨</span>
+              <span class="title">Response</span>
+            </div>
+            <div class="section-content whitespace-pre-wrap">
+              {{ msg.answer }}
+            </div>
+          </div>
+
+          <div v-if="msg.isGenerating" class="loading-indicator">
+            <div class="spinner"></div>
+            <span class="phase-text">{{ currentPhase }}</span>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- Response Block -->
-    <div v-if="agentState.response" class="bg-white border border-gray-200 rounded-3xl shadow-2xl p-8 animate-in fade-in zoom-in-95 duration-500">
-      <p class="text-gray-800 whitespace-pre-wrap leading-relaxed text-lg tracking-tight">
-        {{ agentState.response }}<span v-if="agentState.phase === 'responding'" class="animate-pulse ml-1">▋</span>
-      </p>
-    </div>
-
-    <!-- Input Area (Fixed Bottom) -->
-    <div class="fixed bottom-8 left-0 right-0 px-6 z-10">
-      <div class="max-w-5xl mx-auto">
-        <div class="flex gap-3 bg-white/95 backdrop-blur-xl p-3 rounded-2xl shadow-[0_20px_60px_rgba(0,0,0,0.15)] border border-gray-200">
-          <input 
-            v-model="inputQuery" 
-            @keyup.enter="startChat"
-            class="flex-1 bg-transparent px-4 py-3 outline-none text-gray-800 text-base placeholder-gray-400"
-            placeholder="What should Master-OS do?"
-            :disabled="isProcessing"
-          />
-          <button 
-            v-if="!isProcessing"
-            @click="startChat"
-            :disabled="!inputQuery.trim()"
-            class="bg-black hover:bg-zinc-800 disabled:bg-gray-300 disabled:cursor-not-allowed text-white px-8 py-3 rounded-xl transition-all font-bold text-sm shadow-lg hover:shadow-xl"
-          >
-            EXECUTE
-          </button>
-          <button 
-            v-else
-            @click="cancelGeneration"
-            class="bg-red-600 hover:bg-red-700 text-white px-8 py-3 rounded-xl transition-all font-bold text-sm shadow-lg"
-          >
-            CANCEL
-          </button>
-        </div>
+    <div class="input-container">
+      <textarea
+        v-model="userInput"
+        @keydown.enter.exact.prevent="sendMessage"
+        placeholder="Ask Master-OS to do something..."
+        rows="1"
+        ref="inputRef"
+        :disabled="isGenerating"
+        @input="autoResize"
+      ></textarea>
+      <div class="input-actions">
+        <button 
+          v-if="isGenerating" 
+          @click="cancelGeneration" 
+          class="btn btn-cancel"
+        >
+          ⏹️ Stop
+        </button>
+        <button 
+          v-else
+          @click="sendMessage" 
+          :disabled="!userInput.trim()"
+          class="btn btn-send"
+        >
+          🚀
+        </button>
       </div>
     </div>
   </div>
 </template>
 
+<script setup lang="ts">
+import { ref, computed, nextTick, onMounted } from 'vue';
+
+// --- Types ---
+interface ActionLog {
+  tool: string;
+  params: Record<string, any>;
+  output?: string; // We store the observation directly on the action now
+}
+
+interface Message {
+  role: 'user' | 'assistant';
+  content?: string;
+  thoughts: string[];
+  actions: ActionLog[];
+  answer?: string;
+  isGenerating?: boolean;
+}
+
+// --- State ---
+const messages = ref<Message[]>([]);
+const userInput = ref('');
+const isGenerating = ref(false);
+const currentPhase = ref('Ready');
+const modelStatus = ref<'loaded' | 'loading' | 'offline'>('offline');
+const messagesContainer = ref<HTMLElement | null>(null);
+const inputRef = ref<HTMLTextAreaElement | null>(null);
+
+// --- Computed ---
+const statusClass = computed(() => `status-${modelStatus.value}`);
+const statusText = computed(() => {
+  if (modelStatus.value === 'loaded') return 'System Online';
+  if (modelStatus.value === 'loading') return 'Initializing Model...';
+  return 'System Offline';
+});
+
+// --- Logic ---
+
+const autoResize = () => {
+  if (inputRef.value) {
+    inputRef.value.style.height = 'auto';
+    inputRef.value.style.height = inputRef.value.scrollHeight + 'px';
+  }
+};
+
+const formatParams = (params: Record<string, any>) => JSON.stringify(params).replace(/"/g, '');
+
+const scrollToBottom = () => {
+  nextTick(() => {
+    if (messagesContainer.value) {
+      messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight;
+    }
+  });
+};
+
+const checkStatus = async () => {
+  try {
+    // Ensure your Electron preload exposes this
+    const result = await window.electronAPI.chat.getStatus(); 
+    modelStatus.value = result.model_loaded ? 'loaded' : 'offline';
+  } catch (error) {
+    console.warn('Backend unavailable:', error);
+    modelStatus.value = 'offline';
+  }
+};
+
+const sendMessage = async () => {
+  const text = userInput.value.trim();
+  if (!text || isGenerating.value) return;
+
+  // 1. Add User Message
+  messages.value.push({ role: 'user', content: text, thoughts: [], actions: [] });
+  userInput.value = '';
+  if (inputRef.value) inputRef.value.style.height = 'auto';
+
+  // 2. Prepare Assistant Message
+  const assistantMsg: Message = {
+    role: 'assistant',
+    thoughts: [],
+    actions: [],
+    answer: '',
+    isGenerating: true,
+  };
+  messages.value.push(assistantMsg);
+  
+  isGenerating.value = true;
+  currentPhase.value = "Thinking...";
+  scrollToBottom();
+
+  // 3. Track state for logic
+  let lastPhase = 'start'; 
+
+  try {
+    // Listeners
+    const removeData = window.electronAPI.on('ai:stream-data', (event: any) => {
+      handleStreamEvent(event, assistantMsg, lastPhase);
+      // Update local phase tracker
+      if (event.type === 'phase') lastPhase = event.phase;
+      scrollToBottom();
+    });
+
+    const removeEnd = window.electronAPI.on('ai:stream-end', () => {
+      cleanup('Complete');
+    });
+
+    const removeError = window.electronAPI.on('ai:stream-error', (err: any) => {
+      console.error(err);
+      assistantMsg.answer += `\n[System Error: ${err.error || 'Unknown'}]`;
+      cleanup('Error');
+    });
+
+    // Start Stream
+    await window.electronAPI.chat.stream(text, 0.7, 2048);
+
+    // Cleanup Helper
+    const cleanup = (finalPhase: string) => {
+      removeData(); removeEnd(); removeError();
+      assistantMsg.isGenerating = false;
+      isGenerating.value = false;
+      currentPhase.value = finalPhase;
+    };
+
+  } catch (e) {
+    console.error(e);
+    assistantMsg.answer = "Failed to connect to AI Service.";
+    assistantMsg.isGenerating = false;
+    isGenerating.value = false;
+  }
+};
+
+// --- Core Event Handler ---
+const handleStreamEvent = (event: any, msg: Message, lastPhase: string) => {
+  switch (event.type) {
+    case 'status':
+      currentPhase.value = event.status;
+      break;
+
+    case 'phase':
+      // Visual feedback of what the model is doing
+      if (event.phase === 'thinking') currentPhase.value = "Thinking...";
+      if (event.phase === 'action') currentPhase.value = "Preparing Tool...";
+      
+      // LOGIC: If we switch back to thinking AFTER an action, 
+      // we should probably start a new thought bubble to separate steps.
+      if (event.phase === 'thinking' && msg.actions.length > 0) {
+        msg.thoughts.push(""); // Start new thought block
+      }
+      break;
+
+    case 'thought':
+      // Initialize if empty
+      if (msg.thoughts.length === 0) msg.thoughts.push("");
+      
+      // Append text to the *latest* thought bubble
+      const lastIdx = msg.thoughts.length - 1;
+      msg.thoughts[lastIdx] += event.text;
+      break;
+
+    case 'action':
+      // Add new action entry
+      msg.actions.push({
+        tool: event.tool,
+        params: event.params,
+        output: undefined // Pending
+      });
+      currentPhase.value = `Executing: ${event.tool}`;
+      break;
+
+    case 'observation':
+      // Attach observation to the LAST executed action
+      if (msg.actions.length > 0) {
+        const lastAction = msg.actions[msg.actions.length - 1];
+        lastAction.output = (lastAction.output || "") + event.text;
+      }
+      break;
+
+    case 'done':
+      // Stream the final answer
+      msg.answer = (msg.answer || "") + event.answer;
+      break;
+
+    case 'cancelled':
+      msg.answer += " [Cancelled]";
+      break;
+  }
+};
+
+const cancelGeneration = async () => {
+  // Ensure your backend has this route, or handle it via Electron
+  await window.electronAPI.invoke('ai:request', { 
+    endpoint: '/chat/cancel', // Updated to match likely router prefix
+    method: 'POST' 
+  });
+  isGenerating.value = false;
+  currentPhase.value = "Cancelled";
+};
+
+onMounted(() => {
+  checkStatus();
+});
+</script>
+
 <style scoped>
-@keyframes slide-in-from-top-4 {
-  from {
-    opacity: 0;
-    transform: translateY(-1rem);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+/* Main Container */
+.chat-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background-color: #f3f4f6; /* Light gray bg */
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
-@keyframes slide-in-from-left-4 {
-  from {
-    opacity: 0;
-    transform: translateX(-1rem);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
+/* Header */
+.chat-header {
+  background: white;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 1rem 1.5rem;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
 }
 
-@keyframes fade-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
+.header-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  max-width: 800px;
+  margin: 0 auto;
+  width: 100%;
 }
 
-@keyframes zoom-in-95 {
-  from {
-    opacity: 0;
-    transform: scale(0.95);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
+.chat-header h1 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #111827;
+  margin: 0;
 }
 
-.animate-in {
-  animation-fill-mode: both;
+.status-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  background: #f3f4f6;
 }
 
-.duration-300 {
-  animation-duration: 300ms;
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #9ca3af;
 }
 
-.duration-500 {
-  animation-duration: 500ms;
+.status-loaded .status-dot { background-color: #10b981; box-shadow: 0 0 8px #10b981; }
+.status-loaded { color: #065f46; background: #d1fae5; }
+
+.status-offline .status-dot { background-color: #ef4444; }
+.status-offline { color: #991b1b; background: #fee2e2; }
+
+/* Messages Area */
+.messages-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  scroll-behavior: smooth;
 }
+
+.message-wrapper {
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+  display: flex;
+}
+
+.message {
+  max-width: 85%;
+  border-radius: 1rem;
+  padding: 1rem;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.user-message {
+  margin-left: auto;
+  background: #4f46e5;
+  color: white;
+  border-bottom-right-radius: 4px;
+}
+
+.assistant-message {
+  margin-right: auto;
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-bottom-left-radius: 4px;
+  width: 100%;
+}
+
+/* ReAct Sections */
+.react-section {
+  margin-bottom: 1.5rem;
+  border-left: 2px solid #e5e7eb;
+  padding-left: 1rem;
+}
+
+.react-section:last-child { margin-bottom: 0; }
+
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  color: #6b7280;
+  margin-bottom: 0.5rem;
+}
+
+/* Thoughts */
+.thought-item {
+  font-size: 0.95rem;
+  color: #4b5563;
+  margin-bottom: 0.5rem;
+  line-height: 1.6;
+  font-style: italic;
+}
+
+/* Actions */
+.action-item {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.action-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.tool-name {
+  font-family: monospace;
+  font-weight: 700;
+  color: #d946ef; /* Magenta for tools */
+}
+
+.action-params code {
+  font-family: monospace;
+  font-size: 0.8rem;
+  color: #6b7280;
+  word-break: break-all;
+}
+
+.action-observation {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #e5e7eb;
+  font-size: 0.9rem;
+  color: #374151;
+}
+
+.obs-label {
+  font-weight: 600;
+  font-size: 0.75rem;
+  color: #10b981;
+  margin-right: 6px;
+}
+
+/* Final Answer */
+.answer .section-content {
+  color: #111827;
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.whitespace-pre-wrap {
+  white-space: pre-wrap;
+}
+
+/* Loading */
+.loading-indicator {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 1rem;
+  font-size: 0.875rem;
+  color: #6b7280;
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #e5e7eb;
+  border-top-color: #4f46e5;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Input Area */
+.input-container {
+  background: white;
+  border-top: 1px solid #e5e7eb;
+  padding: 1.5rem;
+}
+
+.input-container textarea {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 12px;
+  resize: none;
+  font-family: inherit;
+  font-size: 1rem;
+  outline: none;
+  max-height: 150px;
+  box-sizing: border-box; 
+  /* Important for width: 100% to not overflow */
+}
+
+.input-container textarea:focus {
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+.input-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.75rem;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-send { background: #4f46e5; color: white; }
+.btn-send:hover { background: #4338ca; }
+.btn-send:disabled { background: #e5e7eb; cursor: not-allowed; }
+
+.btn-cancel { background: #fee2e2; color: #ef4444; }
+.btn-cancel:hover { background: #fecaca; }
 </style>

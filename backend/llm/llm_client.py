@@ -24,13 +24,12 @@ class LLMClient:
         self.rust_url = rust_url or os.getenv("RUST_URL", "http://127.0.0.1:5005")
         self.headers = {"Content-Type": "application/json"}
         
-        # Optimized HTTP client settings
         self._http = httpx.AsyncClient(
-            timeout=httpx.Timeout(180.0, connect=10.0),
+            timeout=httpx.Timeout(300.0, connect=10.0),  # Longer timeout for ReAct loops
             limits=httpx.Limits(
                 max_keepalive_connections=10,
                 max_connections=20,
-                keepalive_expiry=30.0
+                keepalive_expiry=60.0
             )
         )
         
@@ -40,8 +39,6 @@ class LLMClient:
         self._load_lock = asyncio.Lock()
         self._default_gpu_layers = 99
         self._cancel_event = asyncio.Event()
-        self._reconnect_attempts = 0
-        self._max_reconnect_attempts = 3
 
     async def initialize(self, gpu_layers: int = 99, cold_start: bool = True) -> None:
         """Initialize the LLM client and optionally load the model."""
@@ -84,7 +81,6 @@ class LLMClient:
             except Exception as e:
                 logger.error(f"❌ Model load failed: {e}")
                 
-                # Auto-fallback to CPU if GPU failed and retry is enabled
                 if retry and gpu_layers > 0:
                     logger.warning("⚠️ Attempting CPU fallback...")
                     return await self.load_model(gpu_layers=0, retry=False)
@@ -98,7 +94,6 @@ class LLMClient:
             if health.get("model_loaded"):
                 return True
             
-            # Model not loaded, attempt to load
             logger.warning("⚠️ Model not loaded, attempting auto-recovery...")
             await self.load_model(gpu_layers=self._default_gpu_layers)
             return True
@@ -117,73 +112,20 @@ class LLMClient:
             logger.warning(f"Health check failed: {e}")
             return {"status": "unhealthy", "model_loaded": False}
 
-    def _construct_prompt(self, user_query: str, context: str = "") -> str:
-        """Construct a well-formatted prompt for the model."""
-        
-        # Simple, explicit system instruction
-        system_instruction = """You are Master-OS (MOS), a helpful AI assistant.
-
-IMPORTANT: You MUST follow this exact format in EVERY response:
-
-<thinking>
-[Your internal reasoning about what the user wants and how to help them]
-</thinking>
-
-<action>
-[ONLY if you need to use a tool, put JSON here like: {"tool": "set_brightness", "params": {"value": 50}}]
-</action>
-
-[Your final response to the user in natural language]
-
-EXAMPLE 1:
-User asks: "What time is it?"
-
-<thinking>
-The user wants to know the current time. I should use the get_time tool to fetch this information.
-</thinking>
-
-<action>
-{"tool": "get_time", "params": {}}
-</action>
-
-I'll check the time for you right now.
-
-EXAMPLE 2:
-User asks: "Tell me a joke"
-
-<thinking>
-The user wants entertainment. I don't need any tools for this, just a simple joke.
-</thinking>
-
-Why don't scientists trust atoms? Because they make up everything!
-
-Available tools: set_brightness, spotify, files, get_time, open_app, open_website
-"""
-        
-        context_block = f"Additional context: {context}\n\n" if context else ""
-        
-        # Mistral instruction format
-        prompt = f"[INST] {system_instruction}\n\n{context_block}User: {user_query} [/INST]"
-        
-        logger.debug(f"Constructed prompt ({len(prompt)} chars)")
-        return prompt
-
     async def stream(self, prompt: str, context: str = "") -> AsyncIterator[str]:
         """
-        Stream tokens from the model with automatic recovery.
-        Yields JSON strings containing token data.
+        Stream tokens from the model.
+        For ReAct, the prompt should already be formatted by the calling code.
         """
-        # Ensure model is loaded before streaming
         if not await self.ensure_loaded():
             raise AgentError("Failed to ensure model is loaded")
 
-        full_prompt = self._construct_prompt(prompt, context)
-        
+        # Use prompt directly - ReAct formatting done in chat.py
         payload = {
-            "prompt": full_prompt,
+            "prompt": prompt,
             "max_tokens": 2048,
             "temperature": 0.7,
-            "stop": ["</s>", "[INST]", "User:"]
+            "stop": ["</s>", "[INST]", "User:", "Observation:"]  # Stop before observations
         }
 
         max_retries = 3
@@ -197,6 +139,7 @@ Available tools: set_brightness, spotify, files, get_time, open_app, open_websit
                 ) as response:
                     response.raise_for_status()
                     
+                    buffer = ""
                     async for line in response.aiter_lines():
                         if self._cancel_event.is_set():
                             logger.info("Generation cancelled by user")
@@ -208,11 +151,21 @@ Available tools: set_brightness, spotify, files, get_time, open_app, open_websit
                             if not data_str:
                                 continue
                             
-                            # Rust sends plain text, wrap it in JSON for Python
-                            json_packet = json.dumps({"text": data_str})
-                            yield json_packet
+                            try:
+                                # Parse the JSON response from Rust
+                                data = json.loads(data_str)
+                                token = data.get("text", "")
+                                
+                                if token:
+                                    buffer += token
+                                    
+                                    # Yield the token wrapped in JSON for consistent handling
+                                    yield json.dumps({"text": token})
+                                    
+                            except json.JSONDecodeError:
+                                # Fallback: treat as plain text
+                                yield json.dumps({"text": data_str})
                     
-                    # Stream completed successfully
                     return
                     
             except CancelledException:
@@ -221,9 +174,8 @@ Available tools: set_brightness, spotify, files, get_time, open_app, open_websit
                 logger.error(f"Stream error (attempt {attempt + 1}/{max_retries}): {e}")
                 
                 if attempt < max_retries - 1:
-                    # Try to recover
                     logger.warning("Attempting to recover connection...")
-                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    await asyncio.sleep(2 ** attempt)
                     
                     if not await self.ensure_loaded():
                         raise AgentError("Failed to recover model connection")

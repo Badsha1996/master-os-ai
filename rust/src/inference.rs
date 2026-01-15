@@ -43,7 +43,7 @@ pub fn run_inference(
     };
 
     // 2. Create Context with optimized parameters
-    let n_ctx = 4096; // Increased context window
+    let n_ctx = 4096;
     let n_batch = 512;
     
     let ctx_params = LlamaContextParams::default()
@@ -67,14 +67,12 @@ pub fn run_inference(
         Ok(t) => {
             println!("✅ Tokenized: {} tokens", t.len());
             
-            // Validate token count
             if t.is_empty() {
                 let err_msg = "Tokenization produced no tokens";
                 let _ = tx.send(Err(anyhow!(err_msg)));
                 return Err(anyhow!(err_msg));
             }
             
-            // Check if prompt fits in context
             let available_ctx = (n_ctx as usize).saturating_sub(request.max_tokens as usize);
             if t.len() > available_ctx {
                 let err_msg = format!(
@@ -94,23 +92,42 @@ pub fn run_inference(
         }
     };
 
-    // 4. Evaluate prompt tokens
-    let mut batch = LlamaBatch::new(n_ctx as usize, 1);
+    // 4. Evaluate prompt tokens using FRESH batch
+    let mut batch = LlamaBatch::new(n_batch as usize, 1);
     
+    // 4. Evaluate prompt tokens in chunks
     println!("📝 Processing prompt tokens...");
-    for (i, &token) in tokens.iter().enumerate() {
-        let is_last = i == tokens.len() - 1;
-        if let Err(e) = batch.add(token, i as i32, &[0], is_last) {
-            let err_msg = format!("Failed to add token to batch: {}", e);
+    
+    let mut n_processed = 0;
+
+    // Loop through tokens in chunks of n_batch
+    while n_processed < tokens.len() {
+        let n_remain = tokens.len() - n_processed;
+        let n_chunk = if n_remain > n_batch as usize { n_batch as usize } else { n_remain };
+        
+        let mut batch = LlamaBatch::new(n_batch as usize, 1);
+        
+        for i in 0..n_chunk {
+            let token_idx = n_processed + i;
+            let token = tokens[token_idx];
+            let is_last_token = token_idx == tokens.len() - 1;
+            
+            // Only output logits for the very last token of the prompt
+            if let Err(e) = batch.add(token, token_idx as i32, &[0], is_last_token) {
+                let err_msg = format!("Failed to add token to batch: {}", e);
+                let _ = tx.send(Err(anyhow!(err_msg.clone())));
+                return Err(anyhow!(err_msg));
+            }
+        }
+
+        if let Err(e) = ctx.decode(&mut batch) {
+            let err_msg = format!("Failed to decode prompt batch: {}", e);
             let _ = tx.send(Err(anyhow!(err_msg.clone())));
             return Err(anyhow!(err_msg));
         }
-    }
-
-    if let Err(e) = ctx.decode(&mut batch) {
-        let err_msg = format!("Failed to decode prompt: {}", e);
-        let _ = tx.send(Err(anyhow!(err_msg.clone())));
-        return Err(anyhow!(err_msg));
+        
+        n_processed += n_chunk;
+        println!("   Processed {}/{} tokens", n_processed, tokens.len());
     }
 
     println!("✅ Prompt processed successfully");
@@ -124,9 +141,9 @@ pub fn run_inference(
     // Create optimized sampler chain
     let mut sampler = LlamaSampler::chain_simple(vec![
         LlamaSampler::temp(safe_temp),
-        LlamaSampler::top_k(40),         // Top-K sampling
-        LlamaSampler::top_p(0.95, 1),    // Nucleus sampling
-        LlamaSampler::dist(42),          // Random seed
+        LlamaSampler::top_k(40),
+        LlamaSampler::top_p(0.95, 1),
+        LlamaSampler::dist(42),
     ]);
 
     println!("🔄 Generating tokens...");
@@ -163,20 +180,24 @@ pub fn run_inference(
         };
 
         // Accumulate and send
+        
+        // Accumulate and send
         if !piece.is_empty() {
             accumulated.push_str(&piece);
             n_decoded += 1;
 
             // Send token to stream
-            if tx.send(Ok(piece)).is_err() {
-                println!("⚠️ Receiver dropped, stopping generation");
+            if tx.send(Ok(piece.clone())).is_err() { // Clone might be needed if piece moved
                 break;
             }
 
             // Check stop sequences
             if !request.stop_sequences.is_empty() {
                 for stop_seq in &request.stop_sequences {
-                    if accumulated.contains(stop_seq) {
+                    // Check if the END of the string matches the stop sequence
+                    // This prevents false positives if the prompt contained the word earlier
+                    // But for ReAct "Observation:", we usually want to stop immediately if it appears anywhere newly generated.
+                    if accumulated.ends_with(stop_seq) { 
                         println!("✅ Stop sequence detected: '{}'", stop_seq);
                         return Ok(n_decoded);
                     }
@@ -184,8 +205,11 @@ pub fn run_inference(
             }
         }
 
-        // Prepare next batch
-        batch.clear();
+
+        // CRITICAL FIX: Create fresh batch for each token
+        // This prevents batch expiration issues
+        batch = LlamaBatch::new(n_batch as usize, 1);
+        
         if let Err(e) = batch.add(new_token, n_cur, &[0], true) {
             println!("❌ Failed to add token to batch: {}", e);
             break;
@@ -200,7 +224,7 @@ pub fn run_inference(
             break;
         }
 
-        // Periodic status update (every 50 tokens)
+        // Periodic status update
         if n_decoded % 50 == 0 {
             println!("   Generated {} tokens...", n_decoded);
         }
