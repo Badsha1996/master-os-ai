@@ -1,4 +1,3 @@
-// src/inference.rs
 use crate::state::ModelState;
 use anyhow::{anyhow, Result};
 use llama_cpp_2::{
@@ -95,12 +94,10 @@ pub fn run_inference(
     // 4. Evaluate prompt tokens using FRESH batch
     let mut batch = LlamaBatch::new(n_batch as usize, 1);
     
-    // 4. Evaluate prompt tokens in chunks
     println!("📝 Processing prompt tokens...");
     
     let mut n_processed = 0;
 
-    // Loop through tokens in chunks of n_batch
     while n_processed < tokens.len() {
         let n_remain = tokens.len() - n_processed;
         let n_chunk = if n_remain > n_batch as usize { n_batch as usize } else { n_remain };
@@ -112,7 +109,6 @@ pub fn run_inference(
             let token = tokens[token_idx];
             let is_last_token = token_idx == tokens.len() - 1;
             
-            // Only output logits for the very last token of the prompt
             if let Err(e) = batch.add(token, token_idx as i32, &[0], is_last_token) {
                 let err_msg = format!("Failed to add token to batch: {}", e);
                 let _ = tx.send(Err(anyhow!(err_msg.clone())));
@@ -149,28 +145,23 @@ pub fn run_inference(
     println!("🔄 Generating tokens...");
 
     loop {
-        // Check cancellation
         if cancel_token.is_cancelled() {
             println!("⚠️ Generation cancelled by user");
             break;
         }
 
-        // Check max tokens
         if n_decoded >= request.max_tokens {
             println!("✅ Max tokens reached: {}", n_decoded);
             break;
         }
 
-        // Sample next token
         let new_token = sampler.sample(&ctx, batch.n_tokens() - 1);
 
-        // Check for EOS
         if new_token == model.token_eos() {
             println!("✅ EOS token reached");
             break;
         }
 
-        // Convert token to string
         let piece = match model.token_to_str_with_size(new_token, 32, Special::Tokenize) {
             Ok(s) => s,
             Err(e) => {
@@ -179,24 +170,18 @@ pub fn run_inference(
             }
         };
 
-        // Accumulate and send
-        
-        // Accumulate and send
         if !piece.is_empty() {
             accumulated.push_str(&piece);
             n_decoded += 1;
 
             // Send token to stream
-            if tx.send(Ok(piece.clone())).is_err() { // Clone might be needed if piece moved
+            if tx.send(Ok(piece.clone())).is_err() { 
                 break;
             }
 
             // Check stop sequences
             if !request.stop_sequences.is_empty() {
                 for stop_seq in &request.stop_sequences {
-                    // Check if the END of the string matches the stop sequence
-                    // This prevents false positives if the prompt contained the word earlier
-                    // But for ReAct "Observation:", we usually want to stop immediately if it appears anywhere newly generated.
                     if accumulated.ends_with(stop_seq) { 
                         println!("✅ Stop sequence detected: '{}'", stop_seq);
                         return Ok(n_decoded);
@@ -205,9 +190,6 @@ pub fn run_inference(
             }
         }
 
-
-        // CRITICAL FIX: Create fresh batch for each token
-        // This prevents batch expiration issues
         batch = LlamaBatch::new(n_batch as usize, 1);
         
         if let Err(e) = batch.add(new_token, n_cur, &[0], true) {
@@ -217,14 +199,11 @@ pub fn run_inference(
         
         n_cur += 1;
 
-        // Decode next token
         if let Err(e) = ctx.decode(&mut batch) {
             println!("❌ Decode failed: {}", e);
             let _ = tx.send(Err(anyhow!("Decode error: {}", e)));
             break;
         }
-
-        // Periodic status update
         if n_decoded % 50 == 0 {
             println!("   Generated {} tokens...", n_decoded);
         }

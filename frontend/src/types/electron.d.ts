@@ -1,5 +1,3 @@
-
-
 // ===================== Chat Types =====================
 export interface ChatResponse {
   response: string
@@ -45,7 +43,6 @@ export interface ElectronAPI {
 
   // Chat API
   chat: {
-    sendMessage: (text: string, temperature?: number, maxTokens?: number) => Promise<ChatResponse>
     stream: (
       text: string,
       temperature?: number,
@@ -91,6 +88,4 @@ export interface ChatMessage {
   timeMs?: number
 }
 
-export type Mode = 'chat' | 'agent'
-
-export type SidebarTab = 'chat' | 'files' | 'metrics'
+export type Mode = 'chat' 

@@ -1,4 +1,3 @@
-// src/handlers/stream.rs
 use crate::inference::{self, InferenceRequest};
 use crate::state::AppState;
 use axum::{

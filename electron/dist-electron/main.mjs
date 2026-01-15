@@ -5239,9 +5239,6 @@ async function startSidecars() {
 	const rustDir = path.join(__dirname, "../../rust");
 	const pythonPath = path.join(backendDir, "venv", "Scripts", "python.exe");
 	const rustExe = path.join(rustDir, "target/debug/rust.exe");
-	console.log("📂 Backend dir:", backendDir);
-	console.log("📂 Rust dir:", rustDir);
-	console.log("🔍 Looking for Rust exe:", rustExe);
 	if (!fs.existsSync(rustExe)) {
 		console.error("❌ Rust executable not found!");
 		dialog.showErrorBox("Rust Sidecar Missing", `rust.exe not found at:\n${rustExe}\n\nBuild it with: cargo build`);
@@ -5255,9 +5252,6 @@ async function startSidecars() {
 		app.quit();
 		return;
 	}
-	console.log("✅ Rust exe found");
-	console.log("✅ Model file found");
-	console.log("🚀 Starting Rust LLM server...");
 	rustProcess = spawn(rustExe, [], {
 		cwd: rustDir,
 		stdio: [
@@ -5333,7 +5327,6 @@ async function startSidecars() {
 	pythonProcess.on("exit", (code) => {
 		console.log(`Python process exited with code ${code}`);
 	});
-	console.log("⏳ Waiting for Python server...");
 	for (let i$1 = 0; i$1 < 30; i$1++) {
 		try {
 			if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, { headers: { "x-token": PYTHON_TOKEN } })).ok) {
@@ -5401,7 +5394,6 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
 			throw new Error(`Backend error: ${response.statusText} - ${errorText}`);
 		}
 		if (!response.body) throw new Error("Response body is empty");
-		console.log("✅ Stream connected");
 		let buffer = "";
 		response.body.on("data", (chunk) => {
 			buffer += chunk.toString();
@@ -5422,7 +5414,6 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
 			}
 		});
 		response.body.on("end", () => {
-			console.log("✅ Stream ended");
 			event.sender.send("ai:stream-end");
 		});
 		response.body.on("error", (err) => {

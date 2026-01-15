@@ -62,7 +62,6 @@ async function createWindow() {
     return { action: "deny" };
   });
 
-  // Load Frontend
   if (process.env.NODE_ENV === "development") {
     await mainWindow.loadURL("http://localhost:5173");
   } else if (process.env.VITE_DEV_SERVER_URL) {
@@ -79,7 +78,6 @@ async function createWindow() {
     );
   });
 
-  // Start sidecars
   await startSidecars();
   await checkHealth();
 }
@@ -90,11 +88,6 @@ async function startSidecars() {
   const pythonPath = path.join(backendDir, "venv", "Scripts", "python.exe");
   const rustExe = path.join(rustDir, "target/debug/rust.exe");
 
-  console.log("📂 Backend dir:", backendDir);
-  console.log("📂 Rust dir:", rustDir);
-  console.log("🔍 Looking for Rust exe:", rustExe);
-
-  // Verify Rust executable exists
   if (!fs.existsSync(rustExe)) {
     console.error("❌ Rust executable not found!");
     dialog.showErrorBox(
@@ -105,7 +98,6 @@ async function startSidecars() {
     return;
   }
 
-  // Verify model file exists
   const modelPath = path.join(rustDir, "models", "mistral-7b-instruct-v0.2.Q4_K_S.gguf");
   if (!fs.existsSync(modelPath)) {
     console.error("❌ Model file not found!");
@@ -117,23 +109,18 @@ async function startSidecars() {
     return;
   }
 
-  console.log("✅ Rust exe found");
-  console.log("✅ Model file found");
-
-  // 1. Start Rust Process
-  console.log("🚀 Starting Rust LLM server...");
+  
   rustProcess = spawn(rustExe, [], {
     cwd: rustDir,
-    stdio: ["ignore", "pipe", "pipe"], // Capture stdout and stderr
+    stdio: ["ignore", "pipe", "pipe"], 
     env: { 
       ...process.env, 
       PORT: String(RUST_PORT),
-      RUST_LOG: "info", // Enable Rust logging
+      RUST_LOG: "info", 
     },
     windowsHide: true,
   });
 
-  // Log Rust output
   if (rustProcess.stdout) {
     rustProcess.stdout.on("data", (data) => {
       console.log(`[Rust] ${data.toString().trim()}`);
@@ -154,7 +141,6 @@ async function startSidecars() {
     console.log(`Rust process exited with code ${code}`);
   });
 
-  // Wait for Rust to be ready
   console.log("⏳ Waiting for Rust server...");
   for (let i = 0; i < 30; i++) {
     try {
@@ -169,7 +155,6 @@ async function startSidecars() {
     await new Promise((r) => setTimeout(r, 1000));
   }
 
-  // 2. Start Python Process
   console.log("🚀 Starting Python FastAPI server...");
   pythonProcess = spawn(
     pythonPath,
@@ -198,7 +183,6 @@ async function startSidecars() {
     }
   );
 
-  // Log Python output
   if (pythonProcess.stdout) {
     pythonProcess.stdout.on("data", (data) => {
       console.log(`[Python] ${data.toString().trim()}`);
@@ -219,8 +203,6 @@ async function startSidecars() {
     console.log(`Python process exited with code ${code}`);
   });
 
-  // Wait for Python health check
-  console.log("⏳ Waiting for Python server...");
   for (let i = 0; i < 30; i++) {
     try {
       const res = await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, {
@@ -316,8 +298,6 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
       throw new Error("Response body is empty");
     }
 
-    console.log("✅ Stream connected");
-
     let buffer = "";
 
     response.body.on("data", (chunk) => {
@@ -342,7 +322,6 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
     });
 
     response.body.on("end", () => {
-      console.log("✅ Stream ended");
       event.sender.send("ai:stream-end");
     });
 

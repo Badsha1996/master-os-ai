@@ -21,11 +21,11 @@ class AccelerationType(str, Enum):
 
 class LLMClient:
     def __init__(self, rust_url: Optional[str] = None):
-        self.rust_url = rust_url or os.getenv("RUST_URL", "http://127.0.0.1:5005")
+        self.rust_url = rust_url or os.getenv("RUST_URL")
         self.headers = {"Content-Type": "application/json"}
         
         self._http = httpx.AsyncClient(
-            timeout=httpx.Timeout(300.0, connect=10.0),  # Longer timeout for ReAct loops
+            timeout=httpx.Timeout(300.0, connect=10.0),  
             limits=httpx.Limits(
                 max_keepalive_connections=10,
                 max_connections=20,
@@ -41,7 +41,6 @@ class LLMClient:
         self._cancel_event = asyncio.Event()
 
     async def initialize(self, gpu_layers: int = 99, cold_start: bool = True) -> None:
-        """Initialize the LLM client and optionally load the model."""
         self._default_gpu_layers = gpu_layers
         
         try:
@@ -58,7 +57,6 @@ class LLMClient:
             await self.load_model(gpu_layers=gpu_layers)
 
     async def load_model(self, gpu_layers: int = 99, retry: bool = True) -> Dict[str, Any]:
-        """Load the model with automatic fallback to CPU if GPU fails."""
         async with self._load_lock:
             try:
                 logger.info(f"🚀 Loading model with {gpu_layers} GPU layers...")
@@ -88,7 +86,6 @@ class LLMClient:
                 raise AgentError(f"Model load failed: {e}")
 
     async def ensure_loaded(self) -> bool:
-        """Ensure model is loaded, with auto-recovery if needed."""
         try:
             health = await self.health_check()
             if health.get("model_loaded"):
@@ -103,7 +100,6 @@ class LLMClient:
             return False
 
     async def health_check(self) -> Dict[str, Any]:
-        """Check the health status of the Rust backend."""
         try:
             resp = await self._http.get(f"{self.rust_url}/health", timeout=5.0)
             resp.raise_for_status()
@@ -113,20 +109,15 @@ class LLMClient:
             return {"status": "unhealthy", "model_loaded": False}
 
     async def stream(self, prompt: str, context: str = "") -> AsyncIterator[str]:
-        """
-        Stream tokens from the model.
-        For ReAct, the prompt should already be formatted by the calling code.
-        """
         if not await self.ensure_loaded():
             raise AgentError("Failed to ensure model is loaded")
 
-        # Use prompt directly - ReAct formatting done in chat.py
         payload = {
             "prompt": prompt,
             "max_tokens": 2048,
             "temperature": 0.7,
             "stream": True,
-            "stop": ["</s>", "[INST]", "User:", "Observation:","Observation"]  # Stop before observations
+            "stop": ["</s>", "[INST]", "User:", "Observation:","Observation"]  
         }
 
         max_retries = 3
@@ -153,18 +144,14 @@ class LLMClient:
                                 continue
                             
                             try:
-                                # Parse the JSON response from Rust
                                 data = json.loads(data_str)
                                 token = data.get("text", "")
                                 
                                 if token:
                                     buffer += token
-                                    
-                                    # Yield the token wrapped in JSON for consistent handling
                                     yield json.dumps({"text": token})
                                     
                             except json.JSONDecodeError:
-                                # Fallback: treat as plain text
                                 yield json.dumps({"text": data_str})
                     
                     return
@@ -184,7 +171,6 @@ class LLMClient:
                     raise AgentError(f"Stream failed after {max_retries} attempts: {e}")
 
     async def cancel_all(self) -> Dict[str, str]:
-        """Cancel ongoing generation."""
         self._cancel_event.set()
         
         try:
@@ -198,7 +184,6 @@ class LLMClient:
         return {"status": "cancelled"}
 
     async def unload_model(self) -> None:
-        """Unload the model from memory."""
         try:
             await self._http.post(f"{self.rust_url}/unload", timeout=10.0)
             self._is_loaded = False
@@ -207,7 +192,6 @@ class LLMClient:
             logger.error(f"Unload failed: {e}")
 
     async def get_metrics(self) -> Dict[str, Any]:
-        """Get performance metrics from the Rust backend."""
         try:
             resp = await self._http.get(f"{self.rust_url}/metrics", timeout=5.0)
             resp.raise_for_status()
@@ -217,6 +201,5 @@ class LLMClient:
             return {}
 
     async def close(self) -> None:
-        """Close the HTTP client."""
         await self._http.aclose()
         logger.info("LLM client closed")

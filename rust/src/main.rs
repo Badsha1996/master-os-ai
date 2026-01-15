@@ -1,4 +1,3 @@
-// src/main.rs
 mod handlers;
 mod inference;
 mod model;

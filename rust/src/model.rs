@@ -1,4 +1,3 @@
-// src/model.rs
 use anyhow::Result;
 use llama_cpp_2::{
     llama_backend::LlamaBackend,
@@ -6,8 +5,6 @@ use llama_cpp_2::{
 };
 use std::path::PathBuf;
 
-/// Tries to load the model with specific GPU layers.
-/// Returns the loaded model on success.
 pub fn load_model_strategy(
     backend: &LlamaBackend,
     path: &PathBuf,

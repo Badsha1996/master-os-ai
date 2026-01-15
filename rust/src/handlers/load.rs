@@ -1,4 +1,3 @@
-// src/handlers/load.rs
 use crate::model::load_model_strategy;
 use crate::state::{AccelerationType, AppState};
 use axum::{extract::State, Json};

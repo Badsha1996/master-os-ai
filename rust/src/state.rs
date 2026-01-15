@@ -1,4 +1,3 @@
-// src/state.rs
 use llama_cpp_2::{llama_backend::LlamaBackend, model::LlamaModel};
 use serde::Serialize;
 use std::sync::Arc;
@@ -34,14 +33,10 @@ pub struct Metrics {
     pub total_time_ms: u64,
 }
 
-/// The global application state shared across handlers
 #[derive(Clone)]
 pub struct AppState {
-    // Backend is thread-safe and needed for context creation
     pub backend: Arc<LlamaBackend>,
-    // RwLock allows multiple readers (inference) or one writer (load/unload)
     pub model_state: Arc<RwLock<ModelState>>,
     pub metrics: Arc<RwLock<Metrics>>,
-    // Global cancellation token (simplistic implementation)
     pub cancel_token: Arc<RwLock<CancellationToken>>,
 }

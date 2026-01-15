@@ -22,7 +22,6 @@ Begin!
 """
 
 def build_mistral_prompt(history: list) -> str:
-    """Constructs a strict Mistral-formatted prompt."""
     text = f"<s>[INST] {SYSTEM_PROMPT} [/INST]"
     
     for msg in history:
@@ -34,9 +33,6 @@ def build_mistral_prompt(history: list) -> str:
         elif role == "assistant":
             text += f"\n{content}"
         elif role == "system":
-             # Used for Observations in the ReAct loop
             text += f"\nObservation: {content}</s>"
-            
-    # Prime the model to start thinking immediately
     text += "\nThought:" 
     return text

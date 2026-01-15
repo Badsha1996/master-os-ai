@@ -237,6 +237,7 @@ const sendMessage = async () => {
 
 // --- Core Event Handler ---
 const handleStreamEvent = (event: any, msg: Message, lastPhase: string) => {
+  console.log(event, msg)
   switch (event.type) {
     case 'status':
       currentPhase.value = event.status;
@@ -277,7 +278,9 @@ const handleStreamEvent = (event: any, msg: Message, lastPhase: string) => {
       // Attach observation to the LAST executed action
       if (msg.actions.length > 0) {
         const lastAction = msg.actions[msg.actions.length - 1];
-        lastAction.output = (lastAction.output || "") + event.text;
+        if (lastAction) {
+          lastAction.output = (lastAction.output || "") + event.text;
+        }
       }
       break;
 
