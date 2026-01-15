@@ -125,6 +125,7 @@ class LLMClient:
             "prompt": prompt,
             "max_tokens": 2048,
             "temperature": 0.7,
+            "stream": True,
             "stop": ["</s>", "[INST]", "User:", "Observation:","Observation"]  # Stop before observations
         }
 
