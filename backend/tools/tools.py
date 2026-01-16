@@ -108,7 +108,7 @@ try:
     # Configure voice to sound more robotic/jarvis-like if possible
     voices = tts_engine.getProperty('voices')
     # Try to find a good English voice
-    for voice in voices:
+    for voice in voices: # type: ignore
         if "david" in voice.name.lower() or "samantha" in voice.name.lower():
             tts_engine.setProperty('voice', voice.id)
             break
@@ -125,7 +125,7 @@ def is_admin() -> bool:
             import ctypes
             return ctypes.windll.shell32.IsUserAnAdmin() != 0
         else:
-            return os.geteuid() == 0
+            return os.geteuid() == 0 # type: ignore
     except:
         return False
 
@@ -551,7 +551,7 @@ class ToolRegistry:
         if not PSUTIL_AVAILABLE: return "❌ psutil missing."
         try:
             procs = []
-            for p in psutil.process_iter(['pid', 'name', 'username']):
+            for p in psutil.process_iter(['pid', 'name', 'username']): # type: ignore
                 if search.lower() in p.info['name'].lower():
                     procs.append(p.info)
             
@@ -577,7 +577,7 @@ class ToolRegistry:
             # If PID is provided
             if process_name_or_pid.isdigit():
                 pid = int(process_name_or_pid)
-                p = psutil.Process(pid)
+                p = psutil.Process(pid) # type: ignore
                 p.terminate()
                 return f"💀 Terminated PID {pid} ({p.name()})"
             
@@ -585,7 +585,7 @@ class ToolRegistry:
             target = process_name_or_pid.lower()
             if not target.endswith(('.exe', '.app')): 
                 # Loose matching
-                for p in psutil.process_iter(['pid', 'name']):
+                for p in psutil.process_iter(['pid', 'name']): # type: ignore
                     if target in p.info['name'].lower():
                         p.terminate()
                         killed_count += 1
@@ -594,9 +594,9 @@ class ToolRegistry:
                 return f"⚠️ No process found matching '{process_name_or_pid}'"
             return f"💀 Terminated {killed_count} process(es) matching '{process_name_or_pid}'"
             
-        except psutil.NoSuchProcess:
+        except psutil.NoSuchProcess: # type: ignore
             return "❌ Process no longer exists."
-        except psutil.AccessDenied:
+        except psutil.AccessDenied: # type: ignore
             return "❌ Access Denied. Try running as Admin."
         except Exception as e:
             return f"❌ Kill failed: {e}"
@@ -637,13 +637,13 @@ class ToolRegistry:
         """Battery, CPU Load, Memory, Disk Space."""
         if not PSUTIL_AVAILABLE: return "❌ psutil missing."
         try:
-            cpu = psutil.cpu_percent(interval=0.1)
-            mem = psutil.virtual_memory()
-            disk = psutil.disk_usage('/')
+            cpu = psutil.cpu_percent(interval=0.1)# type: ignore
+            mem = psutil.virtual_memory() # type: ignore
+            disk = psutil.disk_usage('/') # type: ignore
             
             batt_info = "🔌 Plugged In"
-            if hasattr(psutil, "sensors_battery"):
-                batt = psutil.sensors_battery()
+            if hasattr(psutil, "sensors_battery"): # type: ignore
+                batt = psutil.sensors_battery() # type: ignore
                 if batt:
                     batt_info = f"{batt.percent}% ({'Charging' if batt.power_plugged else 'Discharging'})"
 
@@ -663,7 +663,7 @@ class ToolRegistry:
         if not PYAUTOGUI_AVAILABLE: return "❌ pyautogui missing."
         try:
             path = os.path.expanduser(f"~/Pictures/{filename}")
-            pyautogui.screenshot(path)
+            pyautogui.screenshot(path) # type: ignore
             return f"📸 Screenshot saved to {path}"
         except Exception as e:
             return f"❌ Screenshot failed: {e}"
@@ -677,7 +677,7 @@ class ToolRegistry:
         if not PYAUTOGUI_AVAILABLE: return "❌ pyautogui missing."
         try:
             key_list = keys.lower().replace(" ", "").split('+')
-            pyautogui.hotkey(*key_list)
+            pyautogui.hotkey(*key_list) # type: ignore
             return f"⌨️ Pressed: {keys}"
         except Exception as e:
             return f"❌ Hotkey failed: {e}"
@@ -687,7 +687,7 @@ class ToolRegistry:
         """Type text into the active window."""
         if not PYAUTOGUI_AVAILABLE: return "❌ pyautogui missing."
         try:
-            pyautogui.write(text, interval=interval)
+            pyautogui.write(text, interval=interval) # type: ignore
             return f"⌨️ Typed {len(text)} chars"
         except Exception as e:
             return f"❌ Typing failed: {e}"
@@ -698,10 +698,10 @@ class ToolRegistry:
         if not CLIPBOARD_AVAILABLE: return "❌ pyperclip missing."
         try:
             if action == "copy":
-                pyperclip.copy(text)
+                pyperclip.copy(text) # type: ignore
                 return "📋 Copied to clipboard."
             elif action == "paste":
-                content = pyperclip.paste()
+                content = pyperclip.paste() # type: ignore
                 return f"📋 Clipboard contents:\n{content}"
             else:
                 return "❌ Unknown clipboard action. Use 'copy' or 'paste'."
@@ -714,8 +714,8 @@ class ToolRegistry:
     def get_network_info() -> str:
         """Internal IP, External IP, Hostname."""
         try:
-            hostname = socket.gethostname()
-            local_ip = socket.gethostbyname(hostname)
+            hostname = socket.gethostname() # type: ignore
+            local_ip = socket.gethostbyname(hostname) # type: ignore
             
             # Get external IP (simple request)
             import requests
@@ -1094,3 +1094,5 @@ def get_compact_tool_signatures() -> str:
         signatures.append(f"• {sig}\n  → {short_desc}")
     
     return "\n".join(signatures)
+
+
