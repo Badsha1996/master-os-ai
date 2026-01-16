@@ -7,7 +7,7 @@ import webbrowser
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 import traceback
 
 # External libraries
@@ -64,6 +64,89 @@ def run_powershell(script: str) -> str:
     except Exception as e:
         return f"PowerShell error: {str(e)}"
 
+
+
+# ==================== LIBRARY LOADING ====================
+# We use try-except blocks to make the script robust even if dependencies are missing
+logger = logging.getLogger("JARVIS_OS_CORE")
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def log_error(msg): logger.error(f"❌ {msg}")
+def log_success(msg): logger.info(f"✅ {msg}")
+
+# 1. System Hardware & Processes
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    log_error("psutil not installed. Process/Battery features disabled.")
+
+# 2. GUI Automation (Mouse/Keyboard/Screen)
+try:
+    import pyautogui
+    # Fail-safe to prevent mouse from going rogue (move mouse to corner to kill)
+    pyautogui.FAILSAFE = True 
+    PYAUTOGUI_AVAILABLE = True
+except ImportError:
+    PYAUTOGUI_AVAILABLE = False
+    log_error("pyautogui not installed. Mouse/Keyboard automation disabled.")
+
+
+# 4. Clipboard
+try:
+    import pyperclip
+    CLIPBOARD_AVAILABLE = True
+except ImportError:
+    CLIPBOARD_AVAILABLE = False
+
+# 5. Text to Speech (The Voice of Jarvis)
+try:
+    import pyttsx3
+    TTS_AVAILABLE = True
+    tts_engine = pyttsx3.init()
+    # Configure voice to sound more robotic/jarvis-like if possible
+    voices = tts_engine.getProperty('voices')
+    # Try to find a good English voice
+    for voice in voices:
+        if "david" in voice.name.lower() or "samantha" in voice.name.lower():
+            tts_engine.setProperty('voice', voice.id)
+            break
+    tts_engine.setProperty('rate', 190) # Slightly faster
+except ImportError:
+    TTS_AVAILABLE = False
+
+# ==================== LOW LEVEL KERNEL UTILS ====================
+
+def is_admin() -> bool:
+    """Check if script has admin/root privileges."""
+    try:
+        if get_platform() == 'windows':
+            import ctypes
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        else:
+            return os.geteuid() == 0
+    except:
+        return False
+
+def run_shell_command(command: str, admin: bool = False) -> str:
+    """Execute raw shell commands. The 'God Mode' function."""
+    try:
+        if admin and not is_admin():
+            return "❌ Privileged command requires Admin/Root access. Run script as Administrator."
+        
+        result = subprocess.run(
+            command, 
+            shell=True, 
+            capture_output=True, 
+            text=True, 
+            timeout=15
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+        return f"Error (Code {result.returncode}): {result.stderr.strip()}"
+    except Exception as e:
+        return f"Shell Execution Failed: {str(e)}"
 # ==================== TOOL IMPLEMENTATIONS ====================
 
 class ToolRegistry:
@@ -356,6 +439,7 @@ class ToolRegistry:
             import psutil
             
             info = {
+                "Creator" : "Badsha Laskar and his team (Joy, Sanya and Atul)",
                 "OS": platform.system(),
                 "OS Version": platform.version(),
                 "Machine": platform.machine(),
@@ -372,58 +456,6 @@ class ToolRegistry:
             return f"❌ Error getting system info: {str(e)}"
     
     # ============ APPLICATION CONTROL ============
-    
-    @staticmethod
-    def open_app(app_name: str) -> str:
-        try:
-            app_lower = app_name.lower().strip()
-            
-            # Platform-specific app maps
-            if get_platform() == "darwin":
-                app_map = {
-                    "chrome": "Google Chrome",
-                    "safari": "Safari",
-                    "firefox": "Firefox",
-                    "vscode": "Visual Studio Code",
-                    "code": "Visual Studio Code",
-                    "spotify": "Spotify",
-                    "notes": "Notes",
-                    "mail": "Mail",
-                    "terminal": "Terminal",
-                    "calculator": "Calculator",
-                    "calendar": "Calendar"
-                }
-                
-                app_to_open = app_map.get(app_lower, app_name)
-                script = f'tell application "{app_to_open}" to activate'
-                run_applescript(script)
-            
-            elif get_platform() == "windows":
-                app_map = {
-                    "notepad": "notepad.exe",
-                    "calculator": "calc.exe",
-                    "chrome": "chrome.exe",
-                    "edge": "msedge.exe",
-                    "firefox": "firefox.exe",
-                    "explorer": "explorer.exe",
-                    "cmd": "cmd.exe",
-                    "powershell": "powershell.exe",
-                    "vscode": "code.exe",
-                    "spotify": "spotify.exe"
-                }
-                
-                executable = app_map.get(app_lower, f"{app_lower}.exe")
-                subprocess.Popen(executable, shell=True)
-            
-            else:  # Linux
-                subprocess.Popen([app_lower])
-            
-            logger.info(f"✅ Opened app: {app_name}")
-            return f"✅ Opened {app_name}"
-        
-        except Exception as e:
-            logger.error(f"Failed to open {app_name}: {e}")
-            return f"❌ Could not open {app_name}: {str(e)}"
     
     @staticmethod
     def open_website(url: str) -> str:
@@ -494,22 +526,256 @@ class ToolRegistry:
         except Exception as e:
             return f"❌ Wait error: {str(e)}"
     
-    @staticmethod
-    def type_text(text: str) -> str:
-        if not PYAUTOGUI_AVAILABLE:
-            return "❌ PyAutoGUI not available. Install: pip install pyautogui"
-        
-        try:
-            pyautogui.write(text, interval=0.05) # type: ignore
-            return f"✅ Typed text: {text[:50]}..."
-        except Exception as e:
-            return f"❌ Type error: {str(e)}"
-    
     # ============ FINAL ANSWER ============
     
     @staticmethod
     def final_answer(answer: str) -> str:
         return answer
+    
+    @staticmethod
+    def speak(text: str) -> str:
+        """Text-to-Speech output."""
+        if not TTS_AVAILABLE: return "❌ TTS library missing."
+        try:
+            tts_engine.say(text)
+            tts_engine.runAndWait()
+            return f"🗣️ Spoke: {text}"
+        except Exception as e:
+            return f"❌ TTS Error: {e}"
+
+    # ============ 2. PROCESS & KERNEL MANAGEMENT ============
+
+    @staticmethod
+    def get_running_processes(search: str = "") -> str:
+        """List active processes (like Task Manager)."""
+        if not PSUTIL_AVAILABLE: return "❌ psutil missing."
+        try:
+            procs = []
+            for p in psutil.process_iter(['pid', 'name', 'username']):
+                if search.lower() in p.info['name'].lower():
+                    procs.append(p.info)
+            
+            # Sort by name and take top 20 if too many
+            procs.sort(key=lambda x: x['name'])
+            top_procs = procs[:20]
+            
+            output = f"⚙️ Found {len(procs)} processes" + (f" matching '{search}'" if search else "") + ":\n"
+            for p in top_procs:
+                output += f" • PID: {p['pid']} | Name: {p['name']} | User: {p['username']}\n"
+            
+            if len(procs) > 20: output += "... (and more)"
+            return output
+        except Exception as e:
+            return f"❌ Process lookup error: {e}"
+
+    @staticmethod
+    def terminate_process(process_name_or_pid: str) -> str:
+        """Kill a specific process/app."""
+        if not PSUTIL_AVAILABLE: return "❌ psutil missing."
+        killed_count = 0
+        try:
+            # If PID is provided
+            if process_name_or_pid.isdigit():
+                pid = int(process_name_or_pid)
+                p = psutil.Process(pid)
+                p.terminate()
+                return f"💀 Terminated PID {pid} ({p.name()})"
+            
+            # If Name is provided
+            target = process_name_or_pid.lower()
+            if not target.endswith(('.exe', '.app')): 
+                # Loose matching
+                for p in psutil.process_iter(['pid', 'name']):
+                    if target in p.info['name'].lower():
+                        p.terminate()
+                        killed_count += 1
+            
+            if killed_count == 0:
+                return f"⚠️ No process found matching '{process_name_or_pid}'"
+            return f"💀 Terminated {killed_count} process(es) matching '{process_name_or_pid}'"
+            
+        except psutil.NoSuchProcess:
+            return "❌ Process no longer exists."
+        except psutil.AccessDenied:
+            return "❌ Access Denied. Try running as Admin."
+        except Exception as e:
+            return f"❌ Kill failed: {e}"
+
+    # ============ 3. DEEP SYSTEM CONTROL ============
+
+    @staticmethod
+    def system_power(action: str) -> str:
+        """Shutdown, Restart, Lock, or Sleep the machine."""
+        plt = get_platform()
+        cmd = ""
+        action = action.lower()
+        
+        if plt == "windows":
+            if "shutdown" in action: cmd = "shutdown /s /t 5"
+            elif "restart" in action: cmd = "shutdown /r /t 5"
+            elif "lock" in action: cmd = "rundll32.dll user32.dll,LockWorkStation"
+            elif "sleep" in action: cmd = "rundll32.dll powrprof.dll,SetSuspendState 0,1,0"
+        elif plt == "darwin": # macOS
+            if "shutdown" in action: cmd = "sudo shutdown -h now"
+            elif "restart" in action: cmd = "sudo shutdown -r now"
+            elif "lock" in action: cmd = "pmset displaysleepnow"
+            elif "sleep" in action: cmd = "pmset sleepnow"
+        else: # Linux
+            if "shutdown" in action: cmd = "shutdown -h now"
+            elif "restart" in action: cmd = "shutdown -r now"
+            
+        if not cmd:
+            return "❌ Unknown power action or platform."
+            
+        # Execute
+        logger.warning(f"EXECUTING POWER COMMAND: {cmd}")
+        run_shell_command(cmd)
+        return f"🔌 Executing: {action}..."
+
+    @staticmethod
+    def get_system_vitals() -> str:
+        """Battery, CPU Load, Memory, Disk Space."""
+        if not PSUTIL_AVAILABLE: return "❌ psutil missing."
+        try:
+            cpu = psutil.cpu_percent(interval=0.1)
+            mem = psutil.virtual_memory()
+            disk = psutil.disk_usage('/')
+            
+            batt_info = "🔌 Plugged In"
+            if hasattr(psutil, "sensors_battery"):
+                batt = psutil.sensors_battery()
+                if batt:
+                    batt_info = f"{batt.percent}% ({'Charging' if batt.power_plugged else 'Discharging'})"
+
+            return (f"📊 System Vitals:\n"
+                    f" • CPU Load: {cpu}%\n"
+                    f" • RAM Usage: {mem.percent}% ({mem.used // (1024**3)}GB used)\n"
+                    f" • Disk Free: {disk.free // (1024**3)}GB\n"
+                    f" • Battery: {batt_info}")
+        except Exception as e:
+            return f"❌ Vitals error: {e}"
+
+    # ============ 4. GUI & APP AUTOMATION (The "Control Apps" part) ============
+
+    @staticmethod
+    def take_screenshot(filename: str = "screenshot.png") -> str:
+        """Capture screen."""
+        if not PYAUTOGUI_AVAILABLE: return "❌ pyautogui missing."
+        try:
+            path = os.path.expanduser(f"~/Pictures/{filename}")
+            pyautogui.screenshot(path)
+            return f"📸 Screenshot saved to {path}"
+        except Exception as e:
+            return f"❌ Screenshot failed: {e}"
+
+    @staticmethod
+    def press_hotkey(keys: str) -> str:
+        """
+        Press keyboard shortcuts. 
+        Format: 'ctrl+c', 'command+shift+3', 'alt+tab', 'enter', 'esc'
+        """
+        if not PYAUTOGUI_AVAILABLE: return "❌ pyautogui missing."
+        try:
+            key_list = keys.lower().replace(" ", "").split('+')
+            pyautogui.hotkey(*key_list)
+            return f"⌨️ Pressed: {keys}"
+        except Exception as e:
+            return f"❌ Hotkey failed: {e}"
+
+    @staticmethod
+    def type_text(text: str, interval: float = 0.01) -> str:
+        """Type text into the active window."""
+        if not PYAUTOGUI_AVAILABLE: return "❌ pyautogui missing."
+        try:
+            pyautogui.write(text, interval=interval)
+            return f"⌨️ Typed {len(text)} chars"
+        except Exception as e:
+            return f"❌ Typing failed: {e}"
+
+    @staticmethod
+    def clipboard_action(action: str, text: str = "") -> str:
+        """Copy to or Paste from clipboard."""
+        if not CLIPBOARD_AVAILABLE: return "❌ pyperclip missing."
+        try:
+            if action == "copy":
+                pyperclip.copy(text)
+                return "📋 Copied to clipboard."
+            elif action == "paste":
+                content = pyperclip.paste()
+                return f"📋 Clipboard contents:\n{content}"
+            else:
+                return "❌ Unknown clipboard action. Use 'copy' or 'paste'."
+        except Exception as e:
+            return f"❌ Clipboard error: {e}"
+
+    # ============ 5. NETWORK & WEB ============
+    
+    @staticmethod
+    def get_network_info() -> str:
+        """Internal IP, External IP, Hostname."""
+        try:
+            hostname = socket.gethostname()
+            local_ip = socket.gethostbyname(hostname)
+            
+            # Get external IP (simple request)
+            import requests
+            try:
+                external_ip = requests.get('https://api.ipify.org', timeout=3).text
+            except:
+                external_ip = "Unavailable"
+                
+            return (f"🌐 Network Status:\n"
+                    f" • Hostname: {hostname}\n"
+                    f" • Local IP: {local_ip}\n"
+                    f" • Public IP: {external_ip}")
+        except Exception as e:
+            return f"❌ Network check failed: {e}"
+
+    # ============ EXISTING UTILS (Refined) ============
+    
+    @staticmethod
+    def open_app(app_name: str) -> str:
+        """Enhanced App Opener that handles OS differences better."""
+        plt = get_platform()
+        app = app_name.lower().strip()
+        
+        try:
+            if plt == "darwin":
+                run_shell_command(f'open -a "{app}"')
+            elif plt == "windows":
+                run_shell_command(f'start {app}')
+            else:
+                subprocess.Popen([app], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            return f"🚀 Launching {app_name}..."
+        except Exception as e:
+            return f"❌ Failed to launch {app_name}: {e}"
+
+    @staticmethod
+    def file_search_recursive(query: str, root_path: str = "~", depth: int = 3) -> str:
+        """Deeper file search."""
+        root = os.path.expanduser(root_path)
+        matches = []
+        try:
+            for root_dir, dirs, files in os.walk(root):
+                # Calculate current depth
+                current_depth = root_dir[len(root):].count(os.sep)
+                if current_depth > depth:
+                    continue
+                
+                # Filter hidden dirs
+                dirs[:] = [d for d in dirs if not d.startswith('.')]
+                
+                for file in files:
+                    if query.lower() in file.lower():
+                        matches.append(os.path.join(root_dir, file))
+                        if len(matches) > 10: break
+                if len(matches) > 10: break
+            
+            if not matches: return f"🔍 No files found for '{query}'"
+            return "🔍 Found:\n" + "\n".join(matches)
+        except Exception as e:
+            return f"❌ Search Error: {e}"
 
 
 # ==================== TOOL SCHEMAS FOR LLM ====================
@@ -646,6 +912,66 @@ TOOL_SCHEMAS = [
         "description": "Return final answer to user. Use when you have all needed information",
         "parameters": {"answer": "complete response to user"},
         "examples": []
+    },
+    {
+        "name": "system_power",
+        "description": "Control power state. BE CAREFUL.",
+        "parameters": {"action": "shutdown, restart, lock, sleep"},
+        "examples": ["lock the screen", "restart computer", "sleep mode"]
+    },
+    {
+        "name": "get_running_processes",
+        "description": "List active applications and system processes.",
+        "parameters": {"search": "filter by name (optional)"},
+        "examples": ["what is running", "is chrome running", "show processes"]
+    },
+    {
+        "name": "terminate_process",
+        "description": "Kill/Close a running application or process forcefullly.",
+        "parameters": {"process_name_or_pid": "name (e.g., chrome) or PID"},
+        "examples": ["kill chrome", "close spotify", "terminate PID 1234"]
+    },
+    {
+        "name": "get_system_vitals",
+        "description": "Get detailed hardware stats (Battery, CPU, RAM).",
+        "parameters": {},
+        "examples": ["check battery", "how is cpu usage", "system status"]
+    },
+    {
+        "name": "press_hotkey",
+        "description": "Press keyboard shortcuts to control apps (e.g., save, close tab, switch window).",
+        "parameters": {"keys": "combination (e.g., ctrl+c, alt+f4, command+t)"},
+        "examples": ["press ctrl+c", "close this tab (ctrl+w)", "switch window (alt+tab)"]
+    },
+    {
+        "name": "take_screenshot",
+        "description": "Capture the current screen state.",
+        "parameters": {"filename": "name of file (default screenshot.png)"},
+        "examples": ["take a screenshot", "capture screen"]
+    },
+    {
+        "name": "clipboard_action",
+        "description": "Read or write to system clipboard.",
+        "parameters": {"action": "'copy' or 'paste'", "text": "text to copy (optional)"},
+        "examples": ["what is in my clipboard", "copy 'hello' to clipboard"]
+    },
+    {
+        "name": "speak",
+        "description": "Give audible voice feedback to the user.",
+        "parameters": {"text": "what to say"},
+        "examples": ["say hello sir", "read this out loud"]
+    },
+    {
+        "name": "open_app",
+        "description": "Launch an application.",
+        "parameters": {"app_name": "name of app"},
+        "examples": ["open vscode", "start browser"]
+    },
+    {
+        "name": "run_shell_command",
+        "description": "ADVANCED: Run raw terminal commands. Use with extreme caution.",
+        "parameters": {"command": "shell command", "admin": "boolean (requires admin privs)"},
+        "examples": ["list files (ls -la)", "ping google.com"]
     }
 ]
 
@@ -670,6 +996,19 @@ TOOL_MAP: Dict[str, Callable] = {
     "wait": ToolRegistry.wait,
     "type_text": ToolRegistry.type_text,
     "final_answer": ToolRegistry.final_answer,
+    "system_power": ToolRegistry.system_power,
+    "get_running_processes": ToolRegistry.get_running_processes,
+    "terminate_process": ToolRegistry.terminate_process,
+    "get_system_vitals": ToolRegistry.get_system_vitals,
+    "press_hotkey": ToolRegistry.press_hotkey,
+    "type_text": ToolRegistry.type_text,
+    "take_screenshot": ToolRegistry.take_screenshot,
+    "clipboard_action": ToolRegistry.clipboard_action,
+    "speak": ToolRegistry.speak,
+    "open_app": ToolRegistry.open_app,
+    "run_shell_command": run_shell_command,
+    "get_network_info": ToolRegistry.get_network_info,
+    "file_search": ToolRegistry.file_search_recursive
 }
 
 # ==================== TOOL EXECUTION ====================
