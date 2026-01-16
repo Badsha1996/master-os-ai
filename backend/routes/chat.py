@@ -9,8 +9,10 @@ from pydantic import BaseModel, Field
 from llm.llm_client import LLMClient, CancelledException
 from utility.get_llm_client import get_llm_client
 from tools.tools import execute_tool
+from tools.smart_router import SmartTaskRouter, execute_direct
+from tools.advanced_gui_tools import GUI_TOOLS
 
-logger = logging.getLogger("chat")
+logger = logging.getLogger("optimized_chat")
 
 class ChatInput(BaseModel):
     text: str = Field(..., min_length=1)
@@ -20,18 +22,74 @@ class ChatInput(BaseModel):
 
 chat_router = APIRouter(prefix="/chat", tags=["Chat"])
 
+# Initialize smart router
+smart_router = SmartTaskRouter()
+
 @chat_router.post("/stream")
-async def chat_stream(
+async def chat_stream_optimized(
     req: ChatInput, 
     request: Request, 
     llm: LLMClient = Depends(get_llm_client)
 ):
     async def event_generator():
+        # ============ SMART ROUTING ============
+        # Try direct execution first (bypasses LLM entirely)
+        direct_action = smart_router.route(req.text)
+        
+        if direct_action:
+            tool_name, params = direct_action
+            
+            # Handle instant conversational responses
+            if tool_name == "instant_answer":
+                answer = params["answer"]
+                logger.info(f"⚡ INSTANT: {req.text[:50]} -> {answer[:50]}")
+                
+                yield f"data: {json.dumps({'type': 'status', 'status': 'instant_response'})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'answer': answer})}\n\n"
+                return
+            
+            # Handle tool-based direct execution
+            logger.info(f"⚡ FAST PATH: {req.text} -> {tool_name}")
+            
+            yield f"data: {json.dumps({'type': 'status', 'status': 'direct_execution'})}\n\n"
+            yield f"data: {json.dumps({'type': 'action', 'tool': tool_name, 'params': params})}\n\n"
+            
+            try:
+                result = execute_direct(tool_name, params)
+                
+                yield f"data: {json.dumps({'type': 'observation', 'text': result})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'answer': result})}\n\n"
+                
+                logger.info(f"✅ Direct execution completed: {result[:100]}")
+                return
+                
+            except Exception as e:
+                logger.error(f"❌ Direct execution failed: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'error': f'Direct execution failed: {str(e)}'})}\n\n"
+                return
+        
+        # ============ LLM REASONING PATH ============
+        # For complex tasks that need reasoning
+        
+        # Quick check: Does this even need LLM?
+        if not smart_router.needs_llm(req.text):
+            # Simple acknowledgment or unclear input
+            simple_responses = [
+                "I'm here to help! You can ask me to open apps, search the web, control your system, and much more.",
+                "Not sure what you mean. Try commands like 'open chrome', 'search youtube', or 'set brightness to 50'.",
+                "Ready when you are! I can help with apps, files, web searches, and system controls.",
+            ]
+            import random
+            answer = random.choice(simple_responses)
+            
+            yield f"data: {json.dumps({'type': 'done', 'answer': answer})}\n\n"
+            return
+        
         if not await llm.ensure_loaded():
             yield f"data: {json.dumps({'type': 'error', 'error': 'Model failed to load'})}\n\n"
             return
 
-        yield f"data: {json.dumps({'type': 'status', 'status': 'starting'})}\n\n"
+        yield f"data: {json.dumps({'type': 'status', 'status': 'reasoning'})}\n\n"
         
         from llm.prompt_engine import build_mistral_prompt
         
@@ -40,29 +98,24 @@ async def chat_stream(
         ]
         
         step_count = 0
-        max_steps = 8  
+        max_steps = 6  # Reduced from 8 - force efficiency
         
         try:
             while step_count < max_steps:
                 step_count += 1
-                logger.info(f"🔄 ReAct Step {step_count}/{max_steps}")
+                logger.info(f"🔄 Step {step_count}/{max_steps}")
                 
                 prompt = build_mistral_prompt(conversation_history)
                 
                 buffer = ""
                 thought_buffer = ""
-                action_buffer = ""
                 in_thought = True
                 in_action = False
                 action_detected = False
-                final_answer_detected = False
                 
-                yield f"data: {json.dumps({'type': 'phase', 'phase': 'thinking'})}\n\n"
+                yield f"data: {json.dumps({'type': 'phase', 'phase': 'thinking', 'step': step_count})}\n\n"
                 
-                async for chunk_json in llm.stream(
-                    prompt, 
-                    req.context,
-                ):
+                async for chunk_json in llm.stream(prompt, req.context):
                     if await request.is_disconnected():
                         raise CancelledException("Client disconnected")
                     
@@ -75,7 +128,15 @@ async def chat_stream(
                         
                         buffer += token
                         
-                        # *** THOUGHT PHASE ***
+                        # Detect Final Answer early
+                        if "Final Answer:" in buffer:
+                            answer_match = re.search(r"Final Answer:\s*(.*)", buffer, re.DOTALL)
+                            if answer_match:
+                                answer = answer_match.group(1).strip()
+                                yield f"data: {json.dumps({'type': 'done', 'answer': answer})}\n\n"
+                                return
+                        
+                        # Thought phase
                         if in_thought and not in_action:
                             thought_buffer += token
                             
@@ -86,35 +147,22 @@ async def chat_stream(
                                 thought_match = re.search(r"Thought:\s*(.*?)(?=Action:|$)", buffer, re.DOTALL)
                                 if thought_match:
                                     final_thought = thought_match.group(1).strip()
-                                    
-                                    remaining = final_thought[len(thought_buffer) - len(token):]
-                                    if remaining:
-                                        yield f"data: {json.dumps({'type': 'thought', 'text': remaining})}\n\n"
+                                    yield f"data: {json.dumps({'type': 'thought', 'text': final_thought})}\n\n"
                                 
                                 yield f"data: {json.dumps({'type': 'phase', 'phase': 'action'})}\n\n"
-                                thought_buffer = ""
                                 continue
                             
-                            if "Final Answer:" in buffer:
-                                final_answer_detected = True
-                                
-                                answer_match = re.search(r"Final Answer:\s*(.*)", buffer, re.DOTALL)
-                                if answer_match:
-                                    answer_text = answer_match.group(1).strip()
-                                    yield f"data: {json.dumps({'type': 'done', 'answer': answer_text})}\n\n"
-                                return
-                            
-                            
-                            yield f"data: {json.dumps({'type': 'thought', 'text': token})}\n\n"
+                            # Stream thoughts in real-time
+                            if len(thought_buffer) > 20:  # Buffer to avoid token spam
+                                yield f"data: {json.dumps({'type': 'thought_chunk', 'text': token})}\n\n"
                         
-                        # *** ACTION PHASE ***
+                        # Action phase
                         elif in_action:
-                            action_buffer += token
-                            
+                            # Match action pattern more aggressively
                             action_pattern = re.search(
                                 r'Action:\s*(\w+)\s*Action Input:\s*(\{[^}]*\})', 
                                 buffer, 
-                                re.DOTALL
+                                re.DOTALL | re.IGNORECASE
                             )
                             
                             if action_pattern:
@@ -125,58 +173,59 @@ async def chat_stream(
                                     params = json.loads(params_str)
                                     action_detected = True
                                     
-                                    logger.info(f"🔧 Tool: {tool_name} | Params: {params}")
+                                    logger.info(f"🔧 Executing: {tool_name}({params})")
                                     
                                     yield f"data: {json.dumps({'type': 'action', 'tool': tool_name, 'params': params})}\n\n"
                                     
-                                    observation = execute_tool(tool_name, params)
-                                    logger.info(f"📊 Observation: {observation[:150]}...")
+                                    # Execute tool (check both registries)
+                                    if tool_name in GUI_TOOLS:
+                                        observation = GUI_TOOLS[tool_name](**params)
+                                    else:
+                                        observation = execute_tool(tool_name, params)
+                                    
+                                    logger.info(f"📊 Result: {observation[:150]}")
                                     
                                     yield f"data: {json.dumps({'type': 'observation', 'text': observation})}\n\n"
                                     
+                                    # Add to conversation history
                                     conversation_history.append({
                                         "role": "assistant",
                                         "content": buffer.strip()
                                     })
                                     conversation_history.append({
                                         "role": "system",
-                                        "content": observation
+                                        "content": f"Observation: {observation}"
                                     })
                                     
+                                    # Break to next iteration
                                     break
                                     
-                                except json.JSONDecodeError:
+                                except json.JSONDecodeError as e:
+                                    logger.warning(f"JSON parse error: {e}")
                                     continue
-                            
-                            
+                    
                     except json.JSONDecodeError:
-                        logger.warning(f"Failed to parse chunk: {chunk_json[:100]}")
                         continue
                 
-                if not action_detected and not final_answer_detected:
-                    if "Final Answer:" in buffer:
-                        answer_match = re.search(r"Final Answer:\s*(.*)", buffer, re.DOTALL)
-                        if answer_match:
-                            answer = answer_match.group(1).strip()
-                            yield f"data: {json.dumps({'type': 'done', 'answer': answer})}\n\n"
-                            return
-                    
-                    clean_buffer = buffer.replace("Thought:", "").strip()
-                    if clean_buffer:
-                        yield f"data: {json.dumps({'type': 'done', 'answer': clean_buffer})}\n\n"
+                # If no action detected and no final answer, force completion
+                if not action_detected:
+                    if buffer.strip():
+                        clean_response = buffer.replace("Thought:", "").strip()
+                        yield f"data: {json.dumps({'type': 'done', 'answer': clean_response})}\n\n"
                     else:
-                        yield f"data: {json.dumps({'type': 'error', 'error': 'Model response incomplete'})}\n\n"
+                        yield f"data: {json.dumps({'type': 'error', 'error': 'No response generated'})}\n\n"
                     return
             
-            logger.warning(f"⚠️ Max steps ({max_steps}) reached")
-            yield f"data: {json.dumps({'type': 'done', 'answer': 'I apologize, but I reached my reasoning limit. Could you rephrase your request?'})}\n\n"
+            # Max steps reached
+            logger.warning(f"⚠️ Max steps reached")
+            yield f"data: {json.dumps({'type': 'done', 'answer': 'Task complexity limit reached. Try breaking it into smaller steps.'})}\n\n"
         
         except CancelledException:
-            logger.info("⚠️ Generation cancelled by user")
+            logger.info("⚠️ Cancelled by user")
             yield f"data: {json.dumps({'type': 'cancelled'})}\n\n"
         
         except Exception as e:
-            logger.error(f"❌ Stream error: {e}", exc_info=True)
+            logger.error(f"❌ Error: {e}", exc_info=True)
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
     
     return StreamingResponse(
@@ -200,7 +249,8 @@ async def get_status(llm: LLMClient = Depends(get_llm_client)):
     return {
         "model_loaded": health.get("model_loaded", False),
         "acceleration": health.get("acceleration", "unknown"),
-        "status": health.get("status", "unknown")
+        "status": health.get("status", "unknown"),
+        "smart_routing": True
     }
 
 @chat_router.get("/metrics")
