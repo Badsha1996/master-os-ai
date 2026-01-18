@@ -92,12 +92,16 @@ export interface StopWatchResponse {
 export interface GetEventsResponse {
   events: FileEvent[]
 }
-
+export interface FileSearchResponse {
+  files: string[]
+  total_indexed: number
+  indexing_status: 'Ready' | 'indexing'
+}
 // ===================== Electron API Interface =====================
 export interface ElectronAPI {
   invoke: (channel: string, data?: any) => Promise<any>
   on: (channel: string, callback: (data: any) => void) => () => void
-  
+
   // Agent API
   agent: {
     run: (task: string) => Promise<AgentRunResponse>
@@ -117,14 +121,19 @@ export interface ElectronAPI {
       text: string,
       temperature?: number,
       maxTokens?: number,
-      onChunk?: (chunk: string) => void
+      onChunk?: (chunk: string) => void,
     ) => Promise<void>
     getStatus: () => Promise<ChatStatusResponse>
   }
 
   // File System API
   files: {
-    openFolder: () => Promise<string[]>
+    openFolder: () => Promise<string[]>;
+    openItem:(path:string)=>Promise<void>;
+  }
+  searchBox: {
+    search: (query: string) => Promise<FileSearchResponse>;
+    resize:(height:number)=>Promise<void>;
   }
 
   // Utility

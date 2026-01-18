@@ -10,12 +10,13 @@ import {
   globalShortcut,
   nativeImage,
   powerMonitor,
-  screen
+  screen,
 } from "electron";
 import { spawn, ChildProcess } from "child_process";
 import { fileURLToPath } from "url";
 import { randomBytes } from "crypto";
 import path from "path";
+import fs from "fs";
 import fetch from "node-fetch";
 
 let mainWindow: BrowserWindow | null = null;
@@ -60,7 +61,7 @@ async function setupSessionSecurity() {
 }
 function getTrayIcon(status: TrayStatus) {
   return nativeImage.createFromPath(
-    path.join(process.cwd(), "assets", `tray.png`)
+    path.join(process.cwd(), "assets", `tray.png`),
   );
 }
 function showWindow() {
@@ -135,7 +136,7 @@ async function createInputWindow() {
     } else {
       await inputWindow.loadFile(
         path.join(__dirname, "../frontend/dist/index.html"),
-        { search: "?route=command" }
+        { search: "?route=command" },
       );
     }
   } catch (err) {
@@ -155,12 +156,17 @@ async function toggleInputWindow() {
     await createInputWindow();
   }
 
+  inputWindow.setSize(600, 60, true);
   if (inputWindow!.isVisible()) {
     inputWindow!.hide();
   } else {
     inputWindow!.show();
     inputWindow!.focus();
   }
+}
+async function changeInputWindowHeight(height: number) {
+  if (!inputWindow || height < 60) return;
+  inputWindow.setSize(600, height, true);
 }
 const HOTKEY_ACTIONS: Record<string, () => void> = {
   "CommandOrControl+Shift+Space": toggleWindow,
@@ -207,13 +213,13 @@ async function createWindow() {
     await mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
     await mainWindow.loadFile(
-      path.join(__dirname, "../frontend/dist/index.html")
+      path.join(__dirname, "../frontend/dist/index.html"),
     );
   }
 
   mainWindow.webContents.on("dom-ready", () => {
     mainWindow?.webContents.executeJavaScript(
-      `window.__CSP_NONCE__ = "${CSP_NONCE}";`
+      `window.__CSP_NONCE__ = "${CSP_NONCE}";`,
     );
   });
 
@@ -239,7 +245,7 @@ async function startFrontendDevServer() {
         ...process.env,
         BROWSER: "none", // prevent auto browser open
       },
-    }
+    },
   );
 
   viteProcess.on("error", (err) => {
@@ -264,7 +270,7 @@ async function startSidecars() {
     console.error("ERROR: Rust executable not found at:", rustExe);
     dialog.showErrorBox(
       "Rust Sidecar Missing",
-      `rust-llm-sidecar.exe not found at:\n${rustExe}\n\nPlease build it first.`
+      `rust-llm-sidecar.exe not found at:\n${rustExe}\n\nPlease build it first.`,
     );
     app.quit();
     return;
@@ -273,9 +279,8 @@ async function startSidecars() {
   // 1. Start Rust
   rustProcess = spawn(rustExe, [], {
     cwd: rustDir,
-    stdio: "inherit",
-    env: { ...process.env, PORT: String(RUST_PORT) },
     stdio: "pipe",
+    env: { ...process.env, PORT: String(RUST_PORT) },
     windowsHide: true,
   });
 
@@ -303,7 +308,7 @@ async function startSidecars() {
       // stdio: "inherit",
       stdio: "pipe", // or "ignore" if you don’t need logs
       windowsHide: true, // <-- hide CMD window
-    }
+    },
   );
 
   // Wait for Python Healthcheck
@@ -374,7 +379,7 @@ ipcMain.handle("ai:request", async (_event, payload) => {
         },
         body: body ? JSON.stringify(body) : undefined,
       },
-      timeout
+      timeout,
     );
 
     if (!res.ok) throw new Error(`Backend error: ${res.statusText}`);
@@ -445,6 +450,47 @@ ipcMain.handle("dialog:openFolder", async () => {
     properties: ["openDirectory", "multiSelections"],
   });
   return result.filePaths;
+});
+ipcMain.handle("file:search", async (_event, payload) => {
+  const { endpoint, method = "POST" ,query} = payload;
+  const res = await fetchWithTimeout(
+    `http://127.0.0.1:${PYTHON_PORT}${endpoint}?file_name=${query}`,
+    {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        "x-token": PYTHON_TOKEN,
+      },
+    },
+    60 * 1000,
+  );
+  if (!res.ok) throw new Error(`Backend error: ${res.statusText}`);
+  return await res.json();
+});
+ipcMain.handle("open:path", async (_, targetPath: string) => {
+  try {
+    if (!fs.existsSync(targetPath)) {
+      throw new Error(`Path does not exist  ${targetPath}`);
+    }
+
+    const stat = fs.statSync(targetPath);
+
+    if (stat.isFile()) {
+      // 📄 Open file with default app
+      await shell.openPath(targetPath);
+    } else if (stat.isDirectory()) {
+      // 📁 Open directory in file explorer
+      await shell.openPath(targetPath);
+    }
+
+    return { success: true };
+  } catch (err: any) {
+    console.log(err);
+    return { success: false, error: err.message };
+  }
+});
+ipcMain.handle("input:resize-window", (_, height) => {
+  inputWindow?.setSize(600, height, true);
 });
 
 ipcMain.handle("tray:set-status", (_e, status: TrayStatus) => {

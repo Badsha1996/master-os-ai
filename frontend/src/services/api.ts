@@ -8,6 +8,7 @@ import type {
   InitializeResponse,
   ChatStatusResponse,
   FileEvent,
+  FileSearchResponse,
 } from '../types/electron'
 
 // Add new types for file watching
@@ -156,7 +157,17 @@ class APIService {
       method: 'POST',
     })
   }
+  // ****************************** COMMAND BOX API ****************************
 
+  async searchFiles(query: string): Promise<FileSearchResponse> {
+    return this.api.searchBox.search(query)
+  }
+  async OpenItem(path: string): Promise<void> {
+    return this.api.files.openItem(path)
+  }
+  async resize(height: number): Promise<void> {
+    return this.api.searchBox.resize(height)
+  }
   // **************************** FILE SYSTEM API ****************************
 
   /**

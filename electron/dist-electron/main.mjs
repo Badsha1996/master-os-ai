@@ -1,9 +1,10 @@
 import { createRequire } from "node:module";
-import { BrowserWindow, Menu, Tray, app, dialog, globalShortcut, ipcMain, nativeImage, powerMonitor, session, shell } from "electron";
+import { BrowserWindow, Menu, Tray, app, dialog, globalShortcut, ipcMain, nativeImage, powerMonitor, screen, session, shell } from "electron";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 import { randomBytes } from "crypto";
 import path from "path";
+import fs from "fs";
 import http from "node:http";
 import https from "node:https";
 import zlib from "node:zlib";
@@ -5248,7 +5249,7 @@ function createTray() {
 async function createInputWindow() {
 	if (inputWindow && !inputWindow.isDestroyed()) return;
 	try {
-		const { width } = __require("electron").screen.getPrimaryDisplay().workAreaSize;
+		const { width } = screen.getPrimaryDisplay().workAreaSize;
 		inputWindow = new BrowserWindow({
 			width: 600,
 			height: 60,
@@ -5287,6 +5288,7 @@ async function createInputWindow() {
 }
 async function toggleInputWindow() {
 	if (!inputWindow || inputWindow.isDestroyed()) await createInputWindow();
+	inputWindow.setSize(600, 60, true);
 	if (inputWindow.isVisible()) inputWindow.hide();
 	else {
 		inputWindow.show();
@@ -5348,12 +5350,11 @@ async function startSidecars() {
 	}
 	rustProcess = spawn(rustExe, [], {
 		cwd: rustDir,
-		stdio: "inherit",
+		stdio: "pipe",
 		env: {
 			...process.env,
 			PORT: String(RUST_PORT)
 		},
-		stdio: "pipe",
 		windowsHide: true
 	});
 	pythonProcess = spawn(pythonPath, [
@@ -5478,6 +5479,36 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
 });
 ipcMain.handle("dialog:openFolder", async () => {
 	return (await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory", "multiSelections"] })).filePaths;
+});
+ipcMain.handle("file:search", async (_event, payload) => {
+	const { endpoint, method = "POST", query } = payload;
+	const res = await fetchWithTimeout(`http://127.0.0.1:${PYTHON_PORT}${endpoint}?file_name=${query}`, {
+		method,
+		headers: {
+			"Content-Type": "application/json",
+			"x-token": PYTHON_TOKEN
+		}
+	}, 60 * 1e3);
+	if (!res.ok) throw new Error(`Backend error: ${res.statusText}`);
+	return await res.json();
+});
+ipcMain.handle("open:path", async (_, targetPath) => {
+	try {
+		if (!fs.existsSync(targetPath)) throw new Error(`Path does not exist  ${targetPath}`);
+		const stat$1 = fs.statSync(targetPath);
+		if (stat$1.isFile()) await shell.openPath(targetPath);
+		else if (stat$1.isDirectory()) await shell.openPath(targetPath);
+		return { success: true };
+	} catch (err) {
+		console.log(err);
+		return {
+			success: false,
+			error: err.message
+		};
+	}
+});
+ipcMain.handle("input:resize-window", (_, height) => {
+	inputWindow?.setSize(600, height, true);
 });
 ipcMain.handle("tray:set-status", (_e, status) => {
 	tray?.setImage(getTrayIcon(status));

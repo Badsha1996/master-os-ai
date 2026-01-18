@@ -3,10 +3,10 @@ import { contextBridge, ipcRenderer } from "electron";
 const allowedOnChannels = [
   "ai:response",
   "ai:status",
-  "ai:stream-data", 
-  "ai:stream-end", 
-  "ai:stream-error", 
-  "ui:open-setting"
+  "ai:stream-data",
+  "ai:stream-end",
+  "ai:stream-error",
+  "ui:open-setting",
 ];
 
 const allowedInvokeChannels = [
@@ -14,6 +14,7 @@ const allowedInvokeChannels = [
   "ai:request-stream",
   "ai:cancel",
   "dialog:openFolder",
+  "file:search",
 ] as const;
 
 type InvokeChannel = (typeof allowedInvokeChannels)[number];
@@ -32,23 +33,18 @@ export interface ElectronAPI {
     predict: (
       prompt: string,
       maxTokens?: number,
-      temperature?: number
+      temperature?: number,
     ) => Promise<any>;
     initialize: (gpuLayers?: number, coldStart?: boolean) => Promise<any>;
   };
 
   // Chat API
   chat: {
-    sendMessage: (
-      text: string,
-      temperature?: number,
-      maxTokens?: number
-    ) => Promise<any>;
     stream: (
       text: string,
       temperature?: number,
       maxTokens?: number,
-      onChunk?: (chunk: string) => void
+      onChunk?: (chunk: string) => void,
     ) => Promise<void>;
     getStatus: () => Promise<any>;
   };
@@ -56,6 +52,11 @@ export interface ElectronAPI {
   // File System API
   files: {
     openFolder: () => Promise<string[]>;
+    openItem: (path: string) => Promise<void>;
+  };
+  searchBox: {
+    search: (query: string) => Promise<string[]>;
+    resize: (height: number) => Promise<void>;
   };
   removeAllStreamListeners: {};
 }
@@ -151,12 +152,24 @@ const electronAPI: ElectronAPI = {
   // File System API
   files: {
     openFolder: () => ipcRenderer.invoke("dialog:openFolder"),
+    openItem: (path: string) => ipcRenderer.invoke("open:path", path),
+  },
+  searchBox: {
+    search: (query: string) =>{
+      return ipcRenderer.invoke("file:search", {
+        endpoint: `/api/file/search`,
+        method: "POST",
+        query: encodeURIComponent(query)
+      })},
+    resize: (height: number) =>
+      ipcRenderer.invoke("input:resize-window", height),
   },
 
   removeAllStreamListeners: () => {
     ipcRenderer.removeAllListeners("ai:stream-data");
     ipcRenderer.removeAllListeners("ai:stream-error");
     ipcRenderer.removeAllListeners("ai:stream-end");
+    ipcRenderer.removeAllListeners("input:resize-window");
   },
 };
 

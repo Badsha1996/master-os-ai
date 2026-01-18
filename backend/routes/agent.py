@@ -5,7 +5,7 @@ import logging
 from agent.core import AgentCore, AgentError
 from tools.tools import tools
 from llm.llm_client import LLMClient
-from utility.dependencies import get_llm_client
+from utility.get_llm_client import get_llm_client
 
 '''
 Logger
