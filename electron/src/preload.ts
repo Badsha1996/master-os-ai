@@ -22,21 +22,7 @@ type InvokeChannel = (typeof allowedInvokeChannels)[number];
 export interface ElectronAPI {
   invoke: (channel: InvokeChannel, data?: any) => Promise<any>;
   on: (channel: string, callback: (data: any) => void) => () => void;
-  // Agent API
-  agent: {
-    run: (task: string) => Promise<any>;
-    loadModel: (gpuLayers?: number) => Promise<any>;
-    unloadModel: () => Promise<any>;
-    checkHealth: () => Promise<any>;
-    getMetrics: () => Promise<any>;
-    getStatus: () => Promise<any>;
-    predict: (
-      prompt: string,
-      maxTokens?: number,
-      temperature?: number,
-    ) => Promise<any>;
-    initialize: (gpuLayers?: number, coldStart?: boolean) => Promise<any>;
-  };
+
 
   // Chat API
   chat: {
@@ -76,61 +62,6 @@ const electronAPI: ElectronAPI = {
     const listener = (_event: any, data?: any) => callback(data);
     ipcRenderer.on(channel, listener);
     return () => ipcRenderer.removeListener(channel, listener);
-  },
-
-  // Agent API Methods
-  agent: {
-    run: (task: string) =>
-      ipcRenderer.invoke("ai:request", {
-        endpoint: "/api/agent/run",
-        method: "POST",
-        body: { task },
-      }),
-
-    loadModel: (gpuLayers = 99) =>
-      ipcRenderer.invoke("ai:request", {
-        endpoint: "/api/agent/llm/load",
-        method: "POST",
-        body: { gpu_layers: gpuLayers },
-      }),
-
-    unloadModel: () =>
-      ipcRenderer.invoke("ai:request", {
-        endpoint: "/api/agent/llm/unload",
-        method: "POST",
-      }),
-
-    checkHealth: () =>
-      ipcRenderer.invoke("ai:request", {
-        endpoint: "/api/agent/llm/health",
-        method: "GET",
-      }),
-
-    getMetrics: () =>
-      ipcRenderer.invoke("ai:request", {
-        endpoint: "/api/agent/llm/metrics",
-        method: "GET",
-      }),
-
-    getStatus: () =>
-      ipcRenderer.invoke("ai:request", {
-        endpoint: "/api/agent/llm/status",
-        method: "GET",
-      }),
-
-    predict: (prompt: string, maxTokens = 1024, temperature = 0.1) =>
-      ipcRenderer.invoke("ai:request", {
-        endpoint: "/api/agent/llm/predict",
-        method: "POST",
-        body: { prompt, max_tokens: maxTokens, temperature },
-      }),
-
-    initialize: (gpuLayers = 99, coldStart = true) =>
-      ipcRenderer.invoke("ai:request", {
-        endpoint: "/api/agent/llm/initialize",
-        method: "POST",
-        body: { gpu_layers: gpuLayers, cold_start: coldStart },
-      }),
   },
 
   // Chat API Methods

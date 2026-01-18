@@ -12,3 +12,10 @@ pyautogui
 pycaw 
 comtypes
 psutil==7.2.1
+screen-brightness-control==0.25.0
+python-docx==1.2.0
+pyttsx3==2.99
+pyautogui 
+pygetwindow 
+Pillow 
+pytesseract

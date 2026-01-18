@@ -14,6 +14,7 @@ import { deprecate, promisify, types } from "node:util";
 import { format } from "node:url";
 import { isIP } from "node:net";
 import { createReadStream, promises } from "node:fs";
+import fs from "fs";
 
 //#region rolldown:runtime
 var __create = Object.create;
@@ -5340,23 +5341,56 @@ async function startSidecars() {
 	const rustDir = path.join(__dirname, "../../rust");
 	const pythonPath = path.join(backendDir, "venv", "Scripts", "python.exe");
 	const rustExe = path.join(rustDir, "target/debug/rust.exe");
-	console.log("Rust directory:", rustDir);
-	console.log("Looking for Rust executable at:", rustExe);
-	if (!__require("fs").existsSync(rustExe)) {
-		console.error("ERROR: Rust executable not found at:", rustExe);
-		dialog.showErrorBox("Rust Sidecar Missing", `rust-llm-sidecar.exe not found at:\n${rustExe}\n\nPlease build it first.`);
+	if (!fs.existsSync(rustExe)) {
+		console.error("❌ Rust executable not found!");
+		dialog.showErrorBox("Rust Sidecar Missing", `rust.exe not found at:\n${rustExe}\n\nBuild it with: cargo build`);
+		app.quit();
+		return;
+	}
+	const modelPath = path.join(rustDir, "models", "mistral-7b-instruct-v0.2.Q4_K_S.gguf");
+	if (!fs.existsSync(modelPath)) {
+		console.error("❌ Model file not found!");
+		dialog.showErrorBox("Model Missing", `Model not found at:\n${modelPath}\n\nPlease download the model first.`);
 		app.quit();
 		return;
 	}
 	rustProcess = spawn(rustExe, [], {
 		cwd: rustDir,
-		stdio: "pipe",
+		stdio: [
+			"ignore",
+			"pipe",
+			"pipe"
+		],
 		env: {
 			...process.env,
-			PORT: String(RUST_PORT)
+			PORT: String(RUST_PORT),
+			RUST_LOG: "info"
 		},
 		windowsHide: true
 	});
+	if (rustProcess.stdout) rustProcess.stdout.on("data", (data) => {
+		console.log(`[Rust] ${data.toString().trim()}`);
+	});
+	if (rustProcess.stderr) rustProcess.stderr.on("data", (data) => {
+		console.error(`[Rust Error] ${data.toString().trim()}`);
+	});
+	rustProcess.on("error", (err) => {
+		console.error("❌ Rust process error:", err);
+	});
+	rustProcess.on("exit", (code) => {
+		console.log(`Rust process exited with code ${code}`);
+	});
+	console.log("⏳ Waiting for Rust server...");
+	for (let i$1 = 0; i$1 < 30; i$1++) {
+		try {
+			if ((await fetch(`http://127.0.0.1:${RUST_PORT}/health`)).ok) {
+				console.log("✅ Rust server ready!");
+				break;
+			}
+		} catch (e$1) {}
+		await new Promise((r$1) => setTimeout(r$1, 1e3));
+	}
+	console.log("🚀 Starting Python FastAPI server...");
 	pythonProcess = spawn(pythonPath, [
 		"-m",
 		"uvicorn",
@@ -5364,7 +5398,9 @@ async function startSidecars() {
 		"--host",
 		"127.0.0.1",
 		"--port",
-		String(PYTHON_PORT)
+		String(PYTHON_PORT),
+		"--log-level",
+		"info"
 	], {
 		cwd: backendDir,
 		env: {
@@ -5374,67 +5410,77 @@ async function startSidecars() {
 			VIRTUAL_ENV: path.join(backendDir, "venv"),
 			PATH: `${path.join(backendDir, "venv", "Scripts")};${process.env.PATH}`
 		},
-		stdio: "pipe",
+		stdio: [
+			"ignore",
+			"pipe",
+			"pipe"
+		],
 		windowsHide: true
 	});
-	for (let i$1 = 0; i$1 < 15; i$1++) {
-		try {
-			if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, { headers: { "x-token": PYTHON_TOKEN } })).ok) return;
-		} catch {}
-		await new Promise((r$1) => setTimeout(r$1, 500));
-	}
-}
-const fetchWithTimeout = async (url, options, timeout = 5e3) => {
-	const controller = new AbortController();
-	const id = setTimeout(() => controller.abort(), timeout);
-	try {
-		const response = await fetch(url, {
-			...options,
-			signal: controller.signal
-		});
-		clearTimeout(id);
-		return response;
-	} catch (error) {
-		clearTimeout(id);
-		throw error;
-	}
-};
-const checkHealth = async () => {
+	if (pythonProcess.stdout) pythonProcess.stdout.on("data", (data) => {
+		console.log(`[Python] ${data.toString().trim()}`);
+	});
+	if (pythonProcess.stderr) pythonProcess.stderr.on("data", (data) => {
+		console.error(`[Python Error] ${data.toString().trim()}`);
+	});
+	pythonProcess.on("error", (err) => {
+		console.error("❌ Python process error:", err);
+	});
+	pythonProcess.on("exit", (code) => {
+		console.log(`Python process exited with code ${code}`);
+	});
 	for (let i$1 = 0; i$1 < 30; i$1++) {
 		try {
 			if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, { headers: { "x-token": PYTHON_TOKEN } })).ok) {
-				console.log("✅ Python backend ready");
-				return true;
+				console.log("✅ Python server ready!");
+				return;
 			}
 		} catch (e$1) {}
 		await new Promise((r$1) => setTimeout(r$1, 1e3));
 	}
-	console.error("Python backend never came up");
+	console.error("❌ Python server failed to start");
+	dialog.showErrorBox("Server Start Failed", "Python backend did not respond in time");
+}
+const checkHealth = async () => {
+	try {
+		if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, { headers: { "x-token": PYTHON_TOKEN } })).ok) {
+			console.log("✅ Health check passed");
+			return true;
+		}
+	} catch (e$1) {
+		console.error("❌ Health check failed:", e$1);
+	}
 	return false;
 };
 ipcMain.handle("ai:request", async (_event, payload) => {
 	const { target = "python", endpoint, method = "POST", body } = payload;
 	const port = target === "rust" ? RUST_PORT : PYTHON_PORT;
 	try {
-		const isPrediction = endpoint.includes("predict") || endpoint.includes("run");
-		const timeout = endpoint.includes("/agent/") ? 18e4 : isPrediction ? 6e4 : 5e3;
-		const res = await fetchWithTimeout(`http://127.0.0.1:${port}${endpoint}`, {
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), 18e4);
+		const res = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
 			method,
 			headers: {
 				"Content-Type": "application/json",
 				"x-token": PYTHON_TOKEN
 			},
-			body: body ? JSON.stringify(body) : void 0
-		}, timeout);
-		if (!res.ok) throw new Error(`Backend error: ${res.statusText}`);
+			body: body ? JSON.stringify(body) : void 0,
+			signal: controller.signal
+		});
+		clearTimeout(timeout);
+		if (!res.ok) {
+			const errorText = await res.text();
+			throw new Error(`Backend error: ${res.statusText} - ${errorText}`);
+		}
 		return await res.json();
 	} catch (error) {
-		console.error(`IPC AI Request Failed [${endpoint}]:`, error.message);
+		console.error(`IPC Request Failed [${endpoint}]:`, error.message);
 		return { error: error.message || "Request failed" };
 	}
 });
 ipcMain.handle("ai:request-stream", async (event, payload) => {
 	const { endpoint, method = "POST", body } = payload;
+	console.log(`📡 Stream request: ${endpoint}`);
 	try {
 		const response = await fetch(`http://127.0.0.1:${PYTHON_PORT}${endpoint}`, {
 			method,
@@ -5445,34 +5491,40 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
 			},
 			body: JSON.stringify(body)
 		});
-		if (!response.ok) throw new Error(`Backend error: ${response.statusText}`);
+		if (!response.ok) {
+			const errorText = await response.text();
+			throw new Error(`Backend error: ${response.statusText} - ${errorText}`);
+		}
 		if (!response.body) throw new Error("Response body is empty");
 		let buffer = "";
 		response.body.on("data", (chunk) => {
 			buffer += chunk.toString();
-			const events = buffer.split("\n\n");
-			buffer = events.pop() || "";
-			for (const evt of events) {
-				const line = evt.trim();
-				if (!line.startsWith("data:")) continue;
-				const jsonStr = line.slice(5).trim();
-				if (!jsonStr) continue;
-				try {
-					const parsed = JSON.parse(jsonStr);
-					event.sender.send("ai:stream-data", parsed);
-				} catch (err) {
-					console.error("Invalid SSE JSON:", jsonStr);
+			let boundary = buffer.indexOf("\n\n");
+			while (boundary !== -1) {
+				const evt = buffer.slice(0, boundary).trim();
+				buffer = buffer.slice(boundary + 2);
+				if (evt.startsWith("data:")) {
+					const jsonStr = evt.slice(5).trim();
+					try {
+						const parsed = JSON.parse(jsonStr);
+						event.sender.send("ai:stream-data", parsed);
+					} catch (e$1) {
+						console.warn("Failed to parse SSE data:", jsonStr);
+					}
 				}
+				boundary = buffer.indexOf("\n\n");
 			}
 		});
 		response.body.on("end", () => {
 			event.sender.send("ai:stream-end");
 		});
 		response.body.on("error", (err) => {
+			console.error("❌ Stream error:", err);
 			event.sender.send("ai:stream-error", { error: err.message });
 		});
 		return { success: true };
 	} catch (error) {
+		console.error("❌ Stream setup failed:", error.message);
 		event.sender.send("ai:stream-error", { error: error.message });
 		return { error: error.message };
 	}
@@ -5520,7 +5572,7 @@ powerMonitor.on("resume", () => {
 	mainWindow?.webContents.send("system:resume");
 });
 app.on("before-quit", () => {
-	isQuitting = true;
+	console.log("🛑 Shutting down processes...");
 	pythonProcess?.kill();
 	rustProcess?.kill();
 });

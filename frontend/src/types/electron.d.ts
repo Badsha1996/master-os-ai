@@ -1,60 +1,3 @@
-// electron.d.ts or types/electron.ts
-
-// ===================== Agent Types =====================
-export interface AgentStep {
-  thought: string
-  action: {
-    name: string
-    input: string
-  }
-  observation: string
-}
-
-export interface AgentRunResponse {
-  result: string
-  steps: AgentStep[]
-  error?: string
-}
-
-export interface LoadModelResponse {
-  status: string
-  acceleration: 'GPU' | 'CPU' | 'None'
-  gpu_layers: number
-}
-
-export interface HealthResponse {
-  api: string
-  llm: {
-    loaded: boolean
-    acceleration: string
-  }
-  ready: boolean
-}
-
-export interface MetricsResponse {
-  total_requests: number
-  total_tokens_generated: number
-  total_time_ms: number
-  average_tokens_per_request: number
-  average_time_per_request_ms: number
-}
-
-export interface LLMStatusResponse {
-  is_loaded: boolean
-  acceleration: 'GPU' | 'CPU' | 'None'
-  gpu_layers: number
-}
-
-export interface PredictResponse {
-  text: string
-  acceleration: 'GPU' | 'CPU' | 'None'
-}
-
-export interface InitializeResponse {
-  status: string
-  message: string
-}
-
 // ===================== Chat Types =====================
 export interface ChatResponse {
   response: string
@@ -102,21 +45,8 @@ export interface ElectronAPI {
   invoke: (channel: string, data?: any) => Promise<any>
   on: (channel: string, callback: (data: any) => void) => () => void
 
-  // Agent API
-  agent: {
-    run: (task: string) => Promise<AgentRunResponse>
-    loadModel: (gpuLayers?: number) => Promise<LoadModelResponse>
-    unloadModel: () => Promise<{ status: string }>
-    checkHealth: () => Promise<HealthResponse>
-    getMetrics: () => Promise<MetricsResponse>
-    getStatus: () => Promise<LLMStatusResponse>
-    predict: (prompt: string, maxTokens?: number, temperature?: number) => Promise<PredictResponse>
-    initialize: (gpuLayers?: number, coldStart?: boolean) => Promise<InitializeResponse>
-  }
-
   // Chat API
   chat: {
-    sendMessage: (text: string, temperature?: number, maxTokens?: number) => Promise<ChatResponse>
     stream: (
       text: string,
       temperature?: number,
@@ -167,6 +97,4 @@ export interface ChatMessage {
   timeMs?: number
 }
 
-export type Mode = 'chat' | 'agent'
-
-export type SidebarTab = 'chat' | 'files' | 'metrics'
+export type Mode = 'chat' 

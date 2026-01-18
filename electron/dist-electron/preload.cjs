@@ -27,51 +27,6 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
 		electron.ipcRenderer.on(channel, listener);
 		return () => electron.ipcRenderer.removeListener(channel, listener);
 	},
-	agent: {
-		run: (task) => electron.ipcRenderer.invoke("ai:request", {
-			endpoint: "/api/agent/run",
-			method: "POST",
-			body: { task }
-		}),
-		loadModel: (gpuLayers = 99) => electron.ipcRenderer.invoke("ai:request", {
-			endpoint: "/api/agent/llm/load",
-			method: "POST",
-			body: { gpu_layers: gpuLayers }
-		}),
-		unloadModel: () => electron.ipcRenderer.invoke("ai:request", {
-			endpoint: "/api/agent/llm/unload",
-			method: "POST"
-		}),
-		checkHealth: () => electron.ipcRenderer.invoke("ai:request", {
-			endpoint: "/api/agent/llm/health",
-			method: "GET"
-		}),
-		getMetrics: () => electron.ipcRenderer.invoke("ai:request", {
-			endpoint: "/api/agent/llm/metrics",
-			method: "GET"
-		}),
-		getStatus: () => electron.ipcRenderer.invoke("ai:request", {
-			endpoint: "/api/agent/llm/status",
-			method: "GET"
-		}),
-		predict: (prompt, maxTokens = 1024, temperature = .1) => electron.ipcRenderer.invoke("ai:request", {
-			endpoint: "/api/agent/llm/predict",
-			method: "POST",
-			body: {
-				prompt,
-				max_tokens: maxTokens,
-				temperature
-			}
-		}),
-		initialize: (gpuLayers = 99, coldStart = true) => electron.ipcRenderer.invoke("ai:request", {
-			endpoint: "/api/agent/llm/initialize",
-			method: "POST",
-			body: {
-				gpu_layers: gpuLayers,
-				cold_start: coldStart
-			}
-		})
-	},
 	chat: {
 		stream: (text, temperature = .7, maxTokens = 512) => electron.ipcRenderer.invoke("ai:request-stream", {
 			endpoint: "/api/chat/stream",
