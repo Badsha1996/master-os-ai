@@ -14,7 +14,6 @@ import { deprecate, promisify, types } from "node:util";
 import { format } from "node:url";
 import { isIP } from "node:net";
 import { createReadStream, promises } from "node:fs";
-import fs from "fs";
 
 //#region rolldown:runtime
 var __create = Object.create;
@@ -5189,7 +5188,6 @@ let inputWindow = null;
 let pythonProcess = null;
 let rustProcess = null;
 let tray = null;
-let isQuitting = false;
 const PYTHON_TOKEN = "54321";
 const PYTHON_PORT = 8e3;
 const RUST_PORT = 5005;
@@ -5289,12 +5287,12 @@ async function createInputWindow() {
 }
 async function toggleInputWindow() {
 	if (!inputWindow || inputWindow.isDestroyed()) await createInputWindow();
-	inputWindow.setSize(600, 60, true);
 	if (inputWindow.isVisible()) inputWindow.hide();
 	else {
 		inputWindow.show();
 		inputWindow.focus();
 	}
+	inputWindow?.setSize(600, 60, true);
 }
 const HOTKEY_ACTIONS = {
 	"CommandOrControl+Shift+Space": toggleWindow,
@@ -5318,10 +5316,8 @@ async function createWindow() {
 	});
 	mainWindow.once("ready-to-show", () => mainWindow?.show());
 	mainWindow.on("close", (e$1) => {
-		if (!isQuitting) {
-			e$1.preventDefault();
-			mainWindow?.hide();
-		}
+		e$1.preventDefault();
+		mainWindow?.hide();
 	});
 	mainWindow.webContents.setWindowOpenHandler(({ url }) => {
 		shell.openExternal(url);
@@ -5534,15 +5530,20 @@ ipcMain.handle("dialog:openFolder", async () => {
 });
 ipcMain.handle("file:search", async (_event, payload) => {
 	const { endpoint, method = "POST", query } = payload;
-	const res = await fetchWithTimeout(`http://127.0.0.1:${PYTHON_PORT}${endpoint}?file_name=${query}`, {
-		method,
-		headers: {
-			"Content-Type": "application/json",
-			"x-token": PYTHON_TOKEN
-		}
-	}, 60 * 1e3);
-	if (!res.ok) throw new Error(`Backend error: ${res.statusText}`);
-	return await res.json();
+	try {
+		const res = await fetch(`http://127.0.0.1:${PYTHON_PORT}${endpoint}?file_name=${query}`, {
+			method,
+			headers: {
+				"Content-Type": "application/json",
+				"x-token": PYTHON_TOKEN
+			}
+		});
+		if (!res.ok) throw new Error(`Backend error: ${res.statusText}`);
+		return await res.json();
+	} catch (error) {
+		console.error("❌ Stream setup failed:", error.message);
+		return { error: error.message };
+	}
 });
 ipcMain.handle("open:path", async (_, targetPath) => {
 	try {

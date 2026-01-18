@@ -18,12 +18,10 @@ import { randomBytes } from "crypto";
 import path from "path";
 import fs from "fs";
 import fetch from "node-fetch";
-import fs from "fs";
 
 let mainWindow: BrowserWindow | null = null;
 let inputWindow: BrowserWindow | null = null;
 
-let viteProcess: ChildProcess | null = null;
 let pythonProcess: ChildProcess | null = null;
 let rustProcess: ChildProcess | null = null;
 let tray: Tray | null = null;
@@ -157,20 +155,17 @@ async function toggleInputWindow() {
     await createInputWindow();
   }
 
-  inputWindow.setSize(600, 60, true);
   if (inputWindow!.isVisible()) {
     inputWindow!.hide();
   } else {
     inputWindow!.show();
     inputWindow!.focus();
   }
+  inputWindow?.setSize(600, 60, true);
 }
-async function changeInputWindowHeight(height: number) {
-  if (!inputWindow || height < 60) return;
-  inputWindow.setSize(600, height, true);
-}
+
 const HOTKEY_ACTIONS: Record<string, () => void> = {
-  "CommandOrControl+Shift+Space": toggleWindow,
+  // "CommandOrControl+Shift+Space": toggleWindow,
   "CommandOrControl+Shift+K": toggleInputWindow,
 };
 function registerHotkeys() {
@@ -237,31 +232,34 @@ async function startSidecars() {
     console.error("❌ Rust executable not found!");
     dialog.showErrorBox(
       "Rust Sidecar Missing",
-      `rust.exe not found at:\n${rustExe}\n\nBuild it with: cargo build`
+      `rust.exe not found at:\n${rustExe}\n\nBuild it with: cargo build`,
     );
     app.quit();
     return;
   }
 
-  const modelPath = path.join(rustDir, "models", "mistral-7b-instruct-v0.2.Q4_K_S.gguf");
+  const modelPath = path.join(
+    rustDir,
+    "models",
+    "mistral-7b-instruct-v0.2.Q4_K_S.gguf",
+  );
   if (!fs.existsSync(modelPath)) {
     console.error("❌ Model file not found!");
     dialog.showErrorBox(
       "Model Missing",
-      `Model not found at:\n${modelPath}\n\nPlease download the model first.`
+      `Model not found at:\n${modelPath}\n\nPlease download the model first.`,
     );
     app.quit();
     return;
   }
 
-  
   rustProcess = spawn(rustExe, [], {
     cwd: rustDir,
-    stdio: ["ignore", "pipe", "pipe"], 
-    env: { 
-      ...process.env, 
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
       PORT: String(RUST_PORT),
-      RUST_LOG: "info", 
+      RUST_LOG: "info",
     },
     windowsHide: true,
   });
@@ -325,7 +323,7 @@ async function startSidecars() {
       },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
-    }
+    },
   );
 
   if (pythonProcess.stdout) {
@@ -366,7 +364,7 @@ async function startSidecars() {
   console.error("❌ Python server failed to start");
   dialog.showErrorBox(
     "Server Start Failed",
-    "Python backend did not respond in time"
+    "Python backend did not respond in time",
   );
 }
 
@@ -490,20 +488,24 @@ ipcMain.handle("dialog:openFolder", async () => {
   return result.filePaths;
 });
 ipcMain.handle("file:search", async (_event, payload) => {
-  const { endpoint, method = "POST" ,query} = payload;
-  const res = await fetchWithTimeout(
-    `http://127.0.0.1:${PYTHON_PORT}${endpoint}?file_name=${query}`,
-    {
-      method,
-      headers: {
-        "Content-Type": "application/json",
-        "x-token": PYTHON_TOKEN,
+  const { endpoint, method = "POST", query } = payload;
+  try {
+    const res = await fetch(
+      `http://127.0.0.1:${PYTHON_PORT}${endpoint}?file_name=${query}`,
+      {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          "x-token": PYTHON_TOKEN,
+        },
       },
-    },
-    60 * 1000,
-  );
-  if (!res.ok) throw new Error(`Backend error: ${res.statusText}`);
-  return await res.json();
+    );
+    if (!res.ok) throw new Error(`Backend error: ${res.statusText}`);
+    return await res.json();
+  } catch (error: any) {
+    console.error("❌ Stream setup failed:", error.message);
+    return { error: error.message };
+  }
 });
 ipcMain.handle("open:path", async (_, targetPath: string) => {
   try {
@@ -549,4 +551,15 @@ app.on("before-quit", () => {
   rustProcess?.kill();
 });
 
-app.whenReady().then(createWindow);
+app.on("will-quit", () => {
+  globalShortcut.unregisterAll();
+});
+app.whenReady().then(async () => {
+  app.setLoginItemSettings({
+    openAtLogin: true,
+  });
+  if (process.platform === "darwin") app.dock?.hide();
+  await createWindow();
+  createTray();
+  registerHotkeys();
+});

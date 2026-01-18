@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { apiService } from '@/services/api'
 
 /* ------------------ refs ------------------ */
 const inputRef = ref<HTMLInputElement | null>(null)
@@ -42,10 +41,10 @@ async function fetchResults(value: string) {
 
   loading.value = true
   try {
-    await apiService.resize(600)
-    const res = await apiService.searchFiles(query.value)
+    await window.electronAPI.searchBox.resize(600)
+    const res = await window.electronAPI.searchBox.search(query.value)
     results.value = res.files
-  } catch (err) {
+  } catch (err: any) {
     window.alert(err.message)
     console.error(err)
     results.value = []
@@ -72,7 +71,7 @@ function onKeydown(e: KeyboardEvent) {
 }
 async function handleItemClick(item: string) {
   console.log(item)
-  await apiService.OpenItem(item)
+  await window.electronAPI.files.openItem(item)
 }
 </script>
 
@@ -96,8 +95,13 @@ async function handleItemClick(item: string) {
 
       <!-- Results -->
       <ul v-else class="results">
-        <li v-for="(item, i) in results" :key="i" class="result-item" @click="handleItemClick(item)">
-          {{  item }}
+        <li
+          v-for="(item, i) in results"
+          :key="i"
+          class="result-item"
+          @click="handleItemClick(item)"
+        >
+          {{ item }}
         </li>
       </ul>
     </div>
@@ -106,7 +110,7 @@ async function handleItemClick(item: string) {
 
 <style scoped>
 .command-container {
-  height: 100%;
+  min-height: 60px;
   padding: 12px 16px;
   border-radius: 14px;
   position: relative;
