@@ -6,13 +6,15 @@ const allowedOnChannels = [
 	"ai:status",
 	"ai:stream-data",
 	"ai:stream-end",
-	"ai:stream-error"
+	"ai:stream-error",
+	"ui:open-setting"
 ];
 const allowedInvokeChannels = [
 	"ai:request",
 	"ai:request-stream",
 	"ai:cancel",
-	"dialog:openFolder"
+	"dialog:openFolder",
+	"file:search"
 ];
 electron.contextBridge.exposeInMainWorld("electronAPI", {
 	invoke: (channel, data) => {
@@ -40,11 +42,25 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
 			method: "GET"
 		})
 	},
-	files: { openFolder: () => electron.ipcRenderer.invoke("dialog:openFolder") },
+	files: {
+		openFolder: () => electron.ipcRenderer.invoke("dialog:openFolder"),
+		openItem: (path) => electron.ipcRenderer.invoke("open:path", path)
+	},
+	searchBox: {
+		search: (query) => {
+			return electron.ipcRenderer.invoke("file:search", {
+				endpoint: `/api/file/search`,
+				method: "POST",
+				query: encodeURIComponent(query)
+			});
+		},
+		resize: (height) => electron.ipcRenderer.invoke("input:resize-window", height)
+	},
 	removeAllStreamListeners: () => {
 		electron.ipcRenderer.removeAllListeners("ai:stream-data");
 		electron.ipcRenderer.removeAllListeners("ai:stream-error");
 		electron.ipcRenderer.removeAllListeners("ai:stream-end");
+		electron.ipcRenderer.removeAllListeners("input:resize-window");
 	}
 });
 

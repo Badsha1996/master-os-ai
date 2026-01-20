@@ -1,9 +1,10 @@
 import { createRequire } from "node:module";
-import { BrowserWindow, app, dialog, ipcMain, session, shell } from "electron";
+import { BrowserWindow, Menu, Tray, app, dialog, globalShortcut, ipcMain, nativeImage, powerMonitor, screen, session, shell } from "electron";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 import { randomBytes } from "crypto";
 import path from "path";
+import fs from "fs";
 import http from "node:http";
 import https from "node:https";
 import zlib from "node:zlib";
@@ -13,7 +14,6 @@ import { deprecate, promisify, types } from "node:util";
 import { format } from "node:url";
 import { isIP } from "node:net";
 import { createReadStream, promises } from "node:fs";
-import fs from "fs";
 
 //#region rolldown:runtime
 var __create = Object.create;
@@ -3579,7 +3579,7 @@ var require_ponyfill_es2018 = /* @__PURE__ */ __commonJSMin(((exports, module) =
 //#region node_modules/fetch-blob/streams.cjs
 var require_streams = /* @__PURE__ */ __commonJSMin((() => {
 	/* c8 ignore start */
-	const POOL_SIZE = 65536;
+	const POOL_SIZE$1 = 65536;
 	if (!globalThis.ReadableStream) try {
 		const process$1 = __require("node:process");
 		const { emitWarning } = process$1;
@@ -3602,7 +3602,7 @@ var require_streams = /* @__PURE__ */ __commonJSMin((() => {
 			return new ReadableStream({
 				type: "bytes",
 				async pull(ctrl) {
-					const buffer = await blob.slice(position, Math.min(blob.size, position + POOL_SIZE)).arrayBuffer();
+					const buffer = await blob.slice(position, Math.min(blob.size, position + POOL_SIZE$1)).arrayBuffer();
 					position += buffer.byteLength;
 					ctrl.enqueue(new Uint8Array(buffer));
 					if (position === blob.size) ctrl.close();
@@ -5184,8 +5184,10 @@ function fixResponseChunkedTransferBadEnding(request, errorCallback) {
 //#endregion
 //#region src/main.ts
 let mainWindow = null;
+let inputWindow = null;
 let pythonProcess = null;
 let rustProcess = null;
+let tray = null;
 const PYTHON_TOKEN = "54321";
 const PYTHON_PORT = 8e3;
 const RUST_PORT = 5005;
@@ -5207,6 +5209,98 @@ async function setupSessionSecurity() {
 		} });
 	});
 }
+function getTrayIcon(status) {
+	return nativeImage.createFromPath(path.join(process.cwd(), "assets", `tray.png`));
+}
+function showWindow() {
+	if (!mainWindow) return;
+	mainWindow.show();
+	mainWindow.focus();
+}
+function toggleWindow() {
+	if (!mainWindow) return;
+	mainWindow.isVisible() ? mainWindow.hide() : showWindow();
+}
+function createTray() {
+	tray = new Tray(getTrayIcon("idle"));
+	const menu = Menu.buildFromTemplate([
+		{
+			label: "Show",
+			click: showWindow
+		},
+		{
+			label: "Settings",
+			click: () => {
+				showWindow();
+				mainWindow?.webContents.send("ui:open-setting");
+			}
+		},
+		{ type: "separator" },
+		{
+			label: "Quit",
+			click: () => app.quit()
+		}
+	]);
+	tray.setToolTip("Master OS AI");
+	tray.setContextMenu(menu);
+	tray.on("click", toggleWindow);
+}
+async function createInputWindow() {
+	if (inputWindow && !inputWindow.isDestroyed()) return;
+	try {
+		const { width } = screen.getPrimaryDisplay().workAreaSize;
+		inputWindow = new BrowserWindow({
+			width: 600,
+			height: 60,
+			x: Math.floor((width - 600) / 2),
+			y: 40,
+			frame: false,
+			transparent: true,
+			alwaysOnTop: true,
+			resizable: false,
+			movable: false,
+			skipTaskbar: true,
+			focusable: true,
+			show: false,
+			webPreferences: {
+				preload: path.join(__dirname, "preload.cjs"),
+				contextIsolation: true,
+				sandbox: true
+			}
+		});
+		inputWindow.on("close", (e$1) => {
+			e$1.preventDefault();
+			inputWindow?.hide();
+		});
+		inputWindow.on("blur", () => {
+			inputWindow?.hide();
+		});
+		if (process.env.NODE_ENV === "development") await inputWindow.loadURL("http://localhost:5173/command");
+		else if (process.env.VITE_DEV_SERVER_URL) await inputWindow.loadURL(process.env.VITE_DEV_SERVER_URL + "/command");
+		else await inputWindow.loadFile(path.join(__dirname, "../frontend/dist/index.html"), { search: "?route=command" });
+	} catch (err) {
+		console.error("Failed to create input window:", err);
+		if (inputWindow && !inputWindow.isDestroyed()) inputWindow.destroy();
+		inputWindow = null;
+		throw err;
+	}
+}
+async function toggleInputWindow() {
+	if (!inputWindow || inputWindow.isDestroyed()) await createInputWindow();
+	if (inputWindow.isVisible()) inputWindow.hide();
+	else {
+		inputWindow.show();
+		inputWindow.focus();
+	}
+	inputWindow?.setSize(600, 60, true);
+}
+const HOTKEY_ACTIONS = {
+	"CommandOrControl+Shift+Space": toggleWindow,
+	"CommandOrControl+Shift+K": toggleInputWindow
+};
+function registerHotkeys() {
+	for (const [key, handler] of Object.entries(HOTKEY_ACTIONS)) if (!globalShortcut.register(key, handler)) console.warn("Failed to register hotkey:", key);
+}
 async function createWindow() {
 	await setupSessionSecurity();
 	mainWindow = new BrowserWindow({
@@ -5221,6 +5315,10 @@ async function createWindow() {
 		}
 	});
 	mainWindow.once("ready-to-show", () => mainWindow?.show());
+	mainWindow.on("close", (e$1) => {
+		e$1.preventDefault();
+		mainWindow?.hide();
+	});
 	mainWindow.webContents.setWindowOpenHandler(({ url }) => {
 		shell.openExternal(url);
 		return { action: "deny" };
@@ -5430,12 +5528,65 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
 ipcMain.handle("dialog:openFolder", async () => {
 	return (await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory", "multiSelections"] })).filePaths;
 });
+ipcMain.handle("file:search", async (_event, payload) => {
+	const { endpoint, method = "POST", query } = payload;
+	try {
+		const res = await fetch(`http://127.0.0.1:${PYTHON_PORT}${endpoint}?file_name=${query}`, {
+			method,
+			headers: {
+				"Content-Type": "application/json",
+				"x-token": PYTHON_TOKEN
+			}
+		});
+		if (!res.ok) throw new Error(`Backend error: ${res.statusText}`);
+		return await res.json();
+	} catch (error) {
+		console.error("❌ Stream setup failed:", error.message);
+		return { error: error.message };
+	}
+});
+ipcMain.handle("open:path", async (_, targetPath) => {
+	try {
+		if (!fs.existsSync(targetPath)) throw new Error(`Path does not exist  ${targetPath}`);
+		const stat$1 = fs.statSync(targetPath);
+		if (stat$1.isFile()) await shell.openPath(targetPath);
+		else if (stat$1.isDirectory()) await shell.openPath(targetPath);
+		return { success: true };
+	} catch (err) {
+		console.log(err);
+		return {
+			success: false,
+			error: err.message
+		};
+	}
+});
+ipcMain.handle("input:resize-window", (_, height) => {
+	inputWindow?.setSize(600, height, true);
+});
+ipcMain.handle("tray:set-status", (_e, status) => {
+	tray?.setImage(getTrayIcon(status));
+});
+ipcMain.handle("tray:set-badge", (_e, count) => {
+	app.setBadgeCount(count);
+});
+powerMonitor.on("resume", () => {
+	mainWindow?.webContents.send("system:resume");
+});
 app.on("before-quit", () => {
 	console.log("🛑 Shutting down processes...");
 	pythonProcess?.kill();
 	rustProcess?.kill();
 });
-app.whenReady().then(createWindow);
+app.on("will-quit", () => {
+	globalShortcut.unregisterAll();
+});
+app.whenReady().then(async () => {
+	app.setLoginItemSettings({ openAtLogin: true });
+	if (process.platform === "darwin") app.dock?.hide();
+	await createWindow();
+	createTray();
+	registerHotkeys();
+});
 
 //#endregion
 export { file_default as n, FormData as t };

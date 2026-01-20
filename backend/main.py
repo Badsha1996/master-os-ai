@@ -14,7 +14,8 @@ from utility.index_files_background import index_files_background
 load_dotenv()
 
 EXPECTED_TOKEN = os.environ.get("MASTER_TOKEN", "")
-PORT = int(os.environ.get("PYTHON_PORT", ""))
+PORT = int(os.environ.get("PYTHON_PORT", "8000"))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -27,29 +28,35 @@ async def lifespan(app: FastAPI):
     await llm.unload_model()
     await llm.close()
 
-app = FastAPI(title="Master OS Worker", 
-              description="Python should only act as SENCES(eyes + ears + voice)",
-              lifespan=lifespan)
+
+app = FastAPI(
+    title="Master OS Worker",
+    description="Python should only act as SENCES(eyes + ears + voice)",
+    lifespan=lifespan,
+)
+
 
 def verify_token(x_token: str = Header(...)):
     if x_token != EXPECTED_TOKEN:
         raise HTTPException(status_code=403)
+
 
 @app.get("/api/health")
 def health(_: str = Header(..., alias="x-token")):
     verify_token(_)
     return JSONResponse(content={"status": "healthy"})
 
-'''
+
+"""
 All Routers 
-'''
+"""
 app.include_router(file_router, prefix="/api", dependencies=[Depends(verify_token)])
 app.include_router(chat_router, prefix="/api", dependencies=[Depends(verify_token)])
 
 if __name__ == "__main__":
     uvicorn.run(
         app,
-        host=os.environ.get("HOST",""),
+        host=os.environ.get("HOST", ""),
         port=PORT,
         log_level="info",
     )
