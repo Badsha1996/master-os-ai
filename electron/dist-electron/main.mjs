@@ -3579,7 +3579,7 @@ var require_ponyfill_es2018 = /* @__PURE__ */ __commonJSMin(((exports, module) =
 //#region node_modules/fetch-blob/streams.cjs
 var require_streams = /* @__PURE__ */ __commonJSMin((() => {
 	/* c8 ignore start */
-	const POOL_SIZE$1 = 65536;
+	const POOL_SIZE = 65536;
 	if (!globalThis.ReadableStream) try {
 		const process$1 = __require("node:process");
 		const { emitWarning } = process$1;
@@ -3602,7 +3602,7 @@ var require_streams = /* @__PURE__ */ __commonJSMin((() => {
 			return new ReadableStream({
 				type: "bytes",
 				async pull(ctrl) {
-					const buffer = await blob.slice(position, Math.min(blob.size, position + POOL_SIZE$1)).arrayBuffer();
+					const buffer = await blob.slice(position, Math.min(blob.size, position + POOL_SIZE)).arrayBuffer();
 					position += buffer.byteLength;
 					ctrl.enqueue(new Uint8Array(buffer));
 					if (position === blob.size) ctrl.close();
@@ -5294,10 +5294,7 @@ async function toggleInputWindow() {
 	}
 	inputWindow?.setSize(600, 60, true);
 }
-const HOTKEY_ACTIONS = {
-	"CommandOrControl+Shift+Space": toggleWindow,
-	"CommandOrControl+Shift+K": toggleInputWindow
-};
+const HOTKEY_ACTIONS = { "CommandOrControl+Shift+K": toggleInputWindow };
 function registerHotkeys() {
 	for (const [key, handler] of Object.entries(HOTKEY_ACTIONS)) if (!globalShortcut.register(key, handler)) console.warn("Failed to register hotkey:", key);
 }

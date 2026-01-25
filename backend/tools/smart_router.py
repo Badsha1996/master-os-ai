@@ -66,7 +66,6 @@ Just tell me what you need!""",
         ],
     }
     
-    # Common app name mappings
     APP_ALIASES = {
         # Browsers
         "chrome": "Google Chrome",
@@ -120,27 +119,21 @@ Just tell me what you need!""",
         self.patterns = self._compile_patterns()
     
     def _compile_patterns(self) -> list:
-        """Compile regex patterns for instant matching."""
         return [
-            # Media playback
             (r"(?:play|search|find|open)\s+(.+?)\s+(?:on\s+)?(youtube|spotify)", 
              self._handle_media_search),
             
-            # Open apps
             (r"(?:open|launch|start|run)\s+(.+?)(?:\s+(?:app|application|program))?$",
              self._handle_open_app),
             
-            # Close apps
             (r"(?:close|kill|stop|quit|end)\s+(.+?)(?:\s+(?:app|application|program))?$",
              self._handle_close_app),
             
-            # Web actions
             (r"(?:search|google|look up|find)\s+(.+?)(?:\s+(?:on\s+)?(?:google|web|internet))?$",
              self._handle_web_search),
             (r"(?:go to|open|visit)\s+([a-zA-Z0-9.-]+\.[a-z]{2,})",
              self._handle_open_website),
             
-            # System controls
             (r"(?:set|change|adjust)\s+(?:brightness|screen brightness)\s+(?:to\s+)?(\d+)",
              self._handle_brightness),
             (r"(?:set|change|adjust)\s+volume\s+(?:to\s+)?(\d+)",
@@ -150,21 +143,17 @@ Just tell me what you need!""",
             (r"(?:disable|turn off|deactivate)\s+dark\s+mode",
              lambda m: ("toggle_dark_mode", {"enable": False})),
             
-            # File operations
             (r"(?:find|search|locate)\s+(?:file\s+)?(.+)",
              self._handle_file_search),
             (r"(?:what|tell me the)\s+time",
              lambda m: ("get_current_time", {})),
             
-            # Screenshots
             (r"(?:take\s+(?:a\s+)?screenshot|capture\s+screen)",
              lambda m: ("take_screenshot", {})),
             
-            # System info
             (r"(?:system\s+info|computer\s+specs|my\s+pc)",
              lambda m: ("get_system_info", {})),
             
-            # Power
             (r"(shutdown|restart|sleep|lock)\s+(?:computer|pc|system)?",
              self._handle_power),
         ]
@@ -186,7 +175,6 @@ Just tell me what you need!""",
     def _handle_open_app(self, match) -> Tuple[str, Dict]:
         app_name = match.group(1).strip().lower()
         
-        # Resolve aliases
         resolved = self.APP_ALIASES.get(app_name, app_name)
         
         return ("open_app", {"app_name": resolved})
@@ -220,21 +208,12 @@ Just tell me what you need!""",
         return ("system_power", {"action": action})
     
     def route(self, user_input: str) -> Optional[Tuple[str, Dict]]:
-        """
-        Try to match user input to:
-        1. Instant conversational response
-        2. Direct tool action
-        Returns (tool_name, params) if matched, None for LLM reasoning.
-        """
         user_input_clean = user_input.strip().lower()
         
-        # Check for instant conversational responses first
         instant_response = self._check_instant_response(user_input_clean)
         if instant_response:
-            # Return as special "instant_answer" action
             return ("instant_answer", {"answer": instant_response})
         
-        # Check for tool-based commands
         for pattern, handler in self.patterns:
             match = re.search(pattern, user_input_clean, re.IGNORECASE)
             if match:
@@ -250,33 +229,24 @@ Just tell me what you need!""",
         return None
     
     def _check_instant_response(self, user_input: str) -> Optional[str]:
-        """Check if input matches instant response patterns."""
         import random
         
         for pattern, responses in self.INSTANT_RESPONSES.items():
             if re.match(pattern, user_input, re.IGNORECASE):
-                # Pick random response for variety
                 return random.choice(responses)
         
         return None
     
     def needs_llm(self, user_input: str) -> bool:
-        """
-        Determine if a query needs LLM reasoning.
-        Returns False for simple conversational queries.
-        """
         user_input_clean = user_input.strip().lower()
         
-        # If it matches instant responses, no LLM needed
         if self._check_instant_response(user_input_clean):
             return False
         
-        # If it matches tool patterns, no LLM needed
         for pattern, _ in self.patterns:
             if re.search(pattern, user_input_clean, re.IGNORECASE):
                 return False
         
-        # Simple conversational queries (no tools needed)
         simple_patterns = [
             r"^(ok|okay|cool|nice|great|awesome|perfect)[\s!.]*$",
             r"^(yes|yeah|yep|no|nope|nah)[\s!.]*$",
@@ -285,17 +255,14 @@ Just tell me what you need!""",
         
         for pattern in simple_patterns:
             if re.match(pattern, user_input_clean, re.IGNORECASE):
-                return False  # Don't need LLM for acknowledgments
+                return False  
         
-        # If it's very short and doesn't look like a command, might not need LLM
         if len(user_input_clean.split()) <= 2 and "?" not in user_input:
-            # Could be just acknowledgment or unclear
             return False
         
-        return True  # Needs LLM for everything else
+        return True  
 
 
 def execute_direct(tool_name: str, params: Dict) -> str:
-    """Execute tool directly without LLM reasoning."""
     logger.info(f"⚡ Direct execution: {tool_name}({params})")
     return execute_tool(tool_name, params)
