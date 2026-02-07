@@ -38,13 +38,13 @@ export class TrayManager {
 
   private getIcon(status: TrayStatus) {
     const iconMap = {
-      idle: "tray-idle.png",
+      idle: "tray.png",
       thinking: "tray-thinking.png",
       error: "tray-error.png",
     };
 
     return nativeImage.createFromPath(
-      path.join(app.getAppPath(), "assets", iconMap[status]),
+      path.join(process.cwd(), "assets", iconMap[status]),
     );
   }
 }

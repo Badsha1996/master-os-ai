@@ -6,19 +6,23 @@ import {
   dialog,
   globalShortcut,
   powerMonitor,
-  screen,
 } from "electron";
 import path from "path";
 import fs from "fs";
 import fetch from "node-fetch";
 import { TrayManager, TrayStatus } from "./tray/trayManager";
-import { CSP_NONCE, dirname, PYTHON_PORT, PYTHON_TOKEN, RUST_PORT } from "./constants";
+import {
+  CSP_NONCE,
+  dirname,
+  PYTHON_PORT,
+  PYTHON_TOKEN,
+  RUST_PORT,
+} from "./constants";
 import { setupSessionSecurity } from "./security/session";
 import { ChildProcess, spawn } from "child_process";
 import { SearchWindow } from "./windows/searchWindow";
 import { checkPythonHealth } from "./sideCars/python/heath";
 import { RustSidecar } from "./sideCars/rust/process";
-import { fileURLToPath } from "url";
 
 let mainWindow: BrowserWindow | null = null;
 let inputWindow: SearchWindow | null = null;
@@ -128,8 +132,6 @@ async function createWindow() {
 async function startSidecars() {
   const backendDir = path.join(dirname, "../../backend");
   const pythonPath = path.join(backendDir, "venv", "Scripts", "python.exe");
-
-  
   rustProcess = new RustSidecar(RUST_PORT);
   rustProcess.start();
   await rustProcess.waitUntilReady();
@@ -367,6 +369,7 @@ powerMonitor.on("resume", () => {
 
 // Cleanup
 app.on("before-quit", () => {
+  isQuitting = true;
   console.log("🛑 Shutting down processes...");
   pythonProcess?.kill();
   rustProcess?.stop();

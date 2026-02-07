@@ -5213,8 +5213,8 @@ var TrayManager = class {
 		this.tray.setImage(this.getIcon(status));
 	}
 	getIcon(status) {
-		return nativeImage.createFromPath(path.join(app.getAppPath(), "assets", {
-			idle: "tray-idle.png",
+		return nativeImage.createFromPath(path.join(process.cwd(), "assets", {
+			idle: "tray.png",
 			thinking: "tray-thinking.png",
 			error: "tray-error.png"
 		}[status]));
@@ -5426,6 +5426,7 @@ let inputWindow = null;
 let trayManager = null;
 let pythonProcess = null;
 let rustProcess = null;
+let isQuitting = false;
 async function createInputWindow() {
 	if (inputWindow) return;
 	try {
@@ -5462,8 +5463,10 @@ async function createWindow() {
 	});
 	mainWindow.once("ready-to-show", () => mainWindow?.show());
 	mainWindow.on("close", (e$1) => {
-		e$1.preventDefault();
-		mainWindow?.hide();
+		if (!isQuitting) {
+			e$1.preventDefault();
+			mainWindow?.hide();
+		}
 	});
 	mainWindow.webContents.setWindowOpenHandler(({ url }) => {
 		shell.openExternal(url);
@@ -5660,13 +5663,18 @@ powerMonitor.on("resume", () => {
 	mainWindow?.webContents.send("system:resume");
 });
 app.on("before-quit", () => {
+	isQuitting = true;
+	console.log("before-quit");
 	console.log("🛑 Shutting down processes...");
 	pythonProcess?.kill();
 	rustProcess?.stop();
 });
 app.on("will-quit", () => {
+	console.log("will-quit");
 	globalShortcut.unregisterAll();
 });
+app.on("quit", () => console.log("quit"));
+app.on("window-all-closed", () => console.log("window-all-closed"));
 app.whenReady().then(async () => {
 	app.setLoginItemSettings({ openAtLogin: true });
 	if (process.platform === "darwin") app.dock?.hide();
