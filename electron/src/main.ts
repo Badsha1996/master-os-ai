@@ -1,68 +1,33 @@
 import {
   app,
   BrowserWindow,
-  session,
   shell,
   ipcMain,
   dialog,
-  Tray,
-  Menu,
   globalShortcut,
-  nativeImage,
   powerMonitor,
   screen,
 } from "electron";
-import { spawn, ChildProcess } from "child_process";
-import { fileURLToPath } from "url";
-import { randomBytes } from "crypto";
 import path from "path";
 import fs from "fs";
 import fetch from "node-fetch";
+import { TrayManager, TrayStatus } from "./tray/trayManager";
+import { CSP_NONCE, dirname, PYTHON_PORT, PYTHON_TOKEN, RUST_PORT } from "./constants";
+import { setupSessionSecurity } from "./security/session";
+import { ChildProcess, spawn } from "child_process";
+import { SearchWindow } from "./windows/searchWindow";
+import { checkPythonHealth } from "./sideCars/python/heath";
+import { RustSidecar } from "./sideCars/rust/process";
+import { fileURLToPath } from "url";
 
 let mainWindow: BrowserWindow | null = null;
-let inputWindow: BrowserWindow | null = null;
+let inputWindow: SearchWindow | null = null;
+let trayManager: TrayManager | null = null;
 
 let pythonProcess: ChildProcess | null = null;
-let rustProcess: ChildProcess | null = null;
-let tray: Tray | null = null;
+let rustProcess: RustSidecar | null = null;
+
 let isQuitting = false;
-
-const PYTHON_TOKEN = "54321";
-const PYTHON_PORT = 8000;
-const RUST_PORT = 5005;
-const CSP_NONCE = randomBytes(16).toString("base64");
-
-type TrayStatus = "idle" | "thinking" | "error";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-async function setupSessionSecurity() {
-  const isDev = !app.isPackaged;
-  const styleSrc = isDev
-    ? "'self' 'unsafe-inline'"
-    : `'self' 'nonce-${CSP_NONCE}'`;
-
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    callback({
-      responseHeaders: {
-        ...details.responseHeaders,
-        "Content-Security-Policy": [
-          "default-src 'self'",
-          "script-src 'self'",
-          `style-src ${styleSrc}`,
-          "img-src 'self' data:",
-          `connect-src 'self' http://127.0.0.1:${PYTHON_PORT} http://127.0.0.1:${RUST_PORT}`,
-        ].join("; "),
-      },
-    });
-  });
-}
-function getTrayIcon(status: TrayStatus) {
-  return nativeImage.createFromPath(
-    path.join(process.cwd(), "assets", `tray.png`),
-  );
-}
 function showWindow() {
   if (!mainWindow) return;
   mainWindow.show();
@@ -73,95 +38,33 @@ function toggleWindow() {
   if (!mainWindow) return;
   mainWindow.isVisible() ? mainWindow.hide() : showWindow();
 }
-function createTray() {
-  tray = new Tray(getTrayIcon("idle"));
 
-  const menu = Menu.buildFromTemplate([
-    { label: "Show", click: showWindow },
-    {
-      label: "Settings",
-      click: () => {
-        showWindow();
-        mainWindow?.webContents.send("ui:open-setting");
-      },
-    },
-    { type: "separator" },
-    { label: "Quit", click: () => app.quit() },
-  ]);
-
-  tray.setToolTip("Master OS AI");
-  tray.setContextMenu(menu);
-  tray.on("click", toggleWindow);
-}
 async function createInputWindow() {
-  if (inputWindow && !inputWindow.isDestroyed()) return;
+  if (inputWindow) return;
 
   try {
-    const { width } = screen.getPrimaryDisplay().workAreaSize;
+    inputWindow = new SearchWindow();
 
-    inputWindow = new BrowserWindow({
-      width: 600,
-      height: 60,
-      x: Math.floor((width - 600) / 2),
-      y: 40,
-      frame: false,
-      transparent: true,
-      alwaysOnTop: true,
-      resizable: false,
-      movable: false,
-      skipTaskbar: true,
-      focusable: true,
-      show: false,
-      webPreferences: {
-        preload: path.join(__dirname, "preload.cjs"),
-        contextIsolation: true,
-        sandbox: true,
-      },
-    });
-
-    inputWindow.on("close", (e) => {
-      e.preventDefault();
-      inputWindow?.hide();
-    });
-
-    inputWindow.on("blur", () => {
-      inputWindow?.hide();
-    });
-
-    if (process.env.NODE_ENV === "development") {
-      await inputWindow.loadURL("http://localhost:5173/command");
-    } else if (process.env.VITE_DEV_SERVER_URL) {
-      await inputWindow.loadURL(process.env.VITE_DEV_SERVER_URL + "/command");
-    } else {
-      await inputWindow.loadFile(
-        path.join(__dirname, "../frontend/dist/index.html"),
-        { search: "?route=command" },
-      );
-    }
+    await inputWindow.loadUI();
   } catch (err) {
     console.error("Failed to create input window:", err);
 
-    if (inputWindow && !inputWindow.isDestroyed()) {
+    if (inputWindow) {
       inputWindow.destroy();
     }
 
     inputWindow = null;
-    throw err; // let caller decide
+    throw err;
   }
 }
 
 async function toggleInputWindow() {
-  if (!inputWindow || inputWindow.isDestroyed()) {
+  if (!inputWindow) {
     await createInputWindow();
   }
 
-  if (inputWindow!.isVisible()) {
-    inputWindow!.hide();
-  } else {
-    inputWindow!.show();
-    inputWindow!.focus();
-  }
-  inputWindow?.setSize(600, 60, true);
+  inputWindow?.toggle();
+  inputWindow?.setSize(600, 60);
 }
 
 const HOTKEY_ACTIONS: Record<string, () => void> = {
@@ -183,7 +86,7 @@ async function createWindow() {
     height: 800,
     show: false,
     webPreferences: {
-      preload: path.join(__dirname, "preload.cjs"),
+      preload: path.join(dirname, "preload.cjs"),
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
@@ -208,7 +111,7 @@ async function createWindow() {
     await mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
     await mainWindow.loadFile(
-      path.join(__dirname, "../frontend/dist/index.html"),
+      path.join(dirname, "../frontend/dist/index.html"),
     );
   }
 
@@ -219,84 +122,17 @@ async function createWindow() {
   });
 
   await startSidecars();
-  await checkHealth();
+  await checkPythonHealth();
 }
 
 async function startSidecars() {
-  const backendDir = path.join(__dirname, "../../backend");
-  const rustDir = path.join(__dirname, "../../rust");
+  const backendDir = path.join(dirname, "../../backend");
   const pythonPath = path.join(backendDir, "venv", "Scripts", "python.exe");
-  const rustExe = path.join(rustDir, "target/debug/rust.exe");
 
-  if (!fs.existsSync(rustExe)) {
-    console.error("❌ Rust executable not found!");
-    dialog.showErrorBox(
-      "Rust Sidecar Missing",
-      `rust.exe not found at:\n${rustExe}\n\nBuild it with: cargo build`,
-    );
-    app.quit();
-    return;
-  }
-
-  const modelPath = path.join(
-    rustDir,
-    "models",
-    "mistral-7b-instruct-v0.2.Q4_K_S.gguf",
-  );
-  if (!fs.existsSync(modelPath)) {
-    console.error("❌ Model file not found!");
-    dialog.showErrorBox(
-      "Model Missing",
-      `Model not found at:\n${modelPath}\n\nPlease download the model first.`,
-    );
-    app.quit();
-    return;
-  }
-
-  rustProcess = spawn(rustExe, [], {
-    cwd: rustDir,
-    stdio: ["ignore", "pipe", "pipe"],
-    env: {
-      ...process.env,
-      PORT: String(RUST_PORT),
-      RUST_LOG: "info",
-    },
-    windowsHide: true,
-  });
-
-  if (rustProcess.stdout) {
-    rustProcess.stdout.on("data", (data) => {
-      console.log(`[Rust] ${data.toString().trim()}`);
-    });
-  }
-
-  if (rustProcess.stderr) {
-    rustProcess.stderr.on("data", (data) => {
-      console.error(`[Rust Error] ${data.toString().trim()}`);
-    });
-  }
-
-  rustProcess.on("error", (err) => {
-    console.error("❌ Rust process error:", err);
-  });
-
-  rustProcess.on("exit", (code) => {
-    console.log(`Rust process exited with code ${code}`);
-  });
-
-  console.log("⏳ Waiting for Rust server...");
-  for (let i = 0; i < 30; i++) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${RUST_PORT}/health`);
-      if (res.ok) {
-        console.log("✅ Rust server ready!");
-        break;
-      }
-    } catch (e) {
-      // Server not ready yet
-    }
-    await new Promise((r) => setTimeout(r, 1000));
-  }
+  
+  rustProcess = new RustSidecar(RUST_PORT);
+  rustProcess.start();
+  await rustProcess.waitUntilReady();
 
   console.log("🚀 Starting Python FastAPI server...");
   pythonProcess = spawn(
@@ -367,21 +203,6 @@ async function startSidecars() {
     "Python backend did not respond in time",
   );
 }
-
-const checkHealth = async () => {
-  try {
-    const res = await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, {
-      headers: { "x-token": PYTHON_TOKEN },
-    });
-    if (res.ok) {
-      console.log("✅ Health check passed");
-      return true;
-    }
-  } catch (e) {
-    console.error("❌ Health check failed:", e);
-  }
-  return false;
-};
 
 // IPC Handlers
 ipcMain.handle("ai:request", async (_event, payload) => {
@@ -530,11 +351,11 @@ ipcMain.handle("open:path", async (_, targetPath: string) => {
   }
 });
 ipcMain.handle("input:resize-window", (_, height) => {
-  inputWindow?.setSize(600, height, true);
+  inputWindow?.setSize(600, height);
 });
 
 ipcMain.handle("tray:set-status", (_e, status: TrayStatus) => {
-  tray?.setImage(getTrayIcon(status));
+  trayManager?.setIcon(status);
 });
 
 ipcMain.handle("tray:set-badge", (_e, count: number) => {
@@ -548,7 +369,7 @@ powerMonitor.on("resume", () => {
 app.on("before-quit", () => {
   console.log("🛑 Shutting down processes...");
   pythonProcess?.kill();
-  rustProcess?.kill();
+  rustProcess?.stop();
 });
 
 app.on("will-quit", () => {
@@ -560,6 +381,6 @@ app.whenReady().then(async () => {
   });
   if (process.platform === "darwin") app.dock?.hide();
   await createWindow();
-  createTray();
+  trayManager = new TrayManager();
   registerHotkeys();
 });

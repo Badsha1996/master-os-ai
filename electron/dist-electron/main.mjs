@@ -1,8 +1,5 @@
 import { createRequire } from "node:module";
 import { BrowserWindow, Menu, Tray, app, dialog, globalShortcut, ipcMain, nativeImage, powerMonitor, screen, session, shell } from "electron";
-import { spawn } from "child_process";
-import { fileURLToPath } from "url";
-import { randomBytes } from "crypto";
 import path from "path";
 import fs from "fs";
 import http from "node:http";
@@ -14,6 +11,9 @@ import { deprecate, promisify, types } from "node:util";
 import { format } from "node:url";
 import { isIP } from "node:net";
 import { createReadStream, promises } from "node:fs";
+import { fileURLToPath } from "url";
+import { randomBytes } from "crypto";
+import { spawn } from "child_process";
 
 //#region rolldown:runtime
 var __create = Object.create;
@@ -3579,7 +3579,7 @@ var require_ponyfill_es2018 = /* @__PURE__ */ __commonJSMin(((exports, module) =
 //#region node_modules/fetch-blob/streams.cjs
 var require_streams = /* @__PURE__ */ __commonJSMin((() => {
 	/* c8 ignore start */
-	const POOL_SIZE = 65536;
+	const POOL_SIZE$1 = 65536;
 	if (!globalThis.ReadableStream) try {
 		const process$1 = __require("node:process");
 		const { emitWarning } = process$1;
@@ -3602,7 +3602,7 @@ var require_streams = /* @__PURE__ */ __commonJSMin((() => {
 			return new ReadableStream({
 				type: "bytes",
 				async pull(ctrl) {
-					const buffer = await blob.slice(position, Math.min(blob.size, position + POOL_SIZE)).arrayBuffer();
+					const buffer = await blob.slice(position, Math.min(blob.size, position + POOL_SIZE$1)).arrayBuffer();
 					position += buffer.byteLength;
 					ctrl.enqueue(new Uint8Array(buffer));
 					if (position === blob.size) ctrl.close();
@@ -4958,7 +4958,7 @@ const supportedSchemas = new Set([
 * @param   {*} [options_] - Fetch options
 * @return  {Promise<import('./response').default>}
 */
-async function fetch(url, options_) {
+async function fetch$1(url, options_) {
 	return new Promise((resolve, reject) => {
 		const request = new Request(url, options_);
 		const { parsedURL, options } = getNodeRequestOptions(request);
@@ -5072,7 +5072,7 @@ async function fetch(url, options_) {
 						}
 						const responseReferrerPolicy = parseReferrerPolicyFromHeader(headers);
 						if (responseReferrerPolicy) requestOptions.referrerPolicy = responseReferrerPolicy;
-						resolve(fetch(new Request(locationURL, requestOptions)));
+						resolve(fetch$1(new Request(locationURL, requestOptions)));
 						finalize();
 						return;
 					}
@@ -5182,18 +5182,56 @@ function fixResponseChunkedTransferBadEnding(request, errorCallback) {
 }
 
 //#endregion
-//#region src/main.ts
-let mainWindow = null;
-let inputWindow = null;
-let pythonProcess = null;
-let rustProcess = null;
-let tray = null;
+//#region src/tray/trayManager.ts
+var TrayManager = class {
+	tray;
+	constructor(onSettingsClick) {
+		const image = this.getIcon("idle");
+		image.setTemplateImage(true);
+		this.tray = new Tray(image);
+		const menu = Menu.buildFromTemplate([
+			{
+				label: "Settings",
+				click: () => onSettingsClick?.()
+			},
+			{ type: "separator" },
+			{
+				label: "Quit",
+				click: () => app.quit()
+			}
+		]);
+		this.tray.setToolTip("Master OS AI");
+		this.tray.setContextMenu(menu);
+	}
+	setStatus(status) {
+		this.tray.setImage(this.getIcon(status));
+	}
+	destroy() {
+		this.tray.destroy();
+	}
+	setIcon(status) {
+		this.tray.setImage(this.getIcon(status));
+	}
+	getIcon(status) {
+		return nativeImage.createFromPath(path.join(app.getAppPath(), "assets", {
+			idle: "tray-idle.png",
+			thinking: "tray-thinking.png",
+			error: "tray-error.png"
+		}[status]));
+	}
+};
+
+//#endregion
+//#region src/constants.ts
+const filename = fileURLToPath(import.meta.url);
+const dirname = path.dirname(filename);
 const PYTHON_TOKEN = "54321";
 const PYTHON_PORT = 8e3;
 const RUST_PORT = 5005;
 const CSP_NONCE = randomBytes(16).toString("base64");
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+
+//#endregion
+//#region src/security/session.ts
 async function setupSessionSecurity() {
 	const styleSrc = !app.isPackaged ? "'self' 'unsafe-inline'" : `'self' 'nonce-${CSP_NONCE}'`;
 	session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
@@ -5209,47 +5247,17 @@ async function setupSessionSecurity() {
 		} });
 	});
 }
-function getTrayIcon(status) {
-	return nativeImage.createFromPath(path.join(process.cwd(), "assets", `tray.png`));
-}
-function showWindow() {
-	if (!mainWindow) return;
-	mainWindow.show();
-	mainWindow.focus();
-}
-function toggleWindow() {
-	if (!mainWindow) return;
-	mainWindow.isVisible() ? mainWindow.hide() : showWindow();
-}
-function createTray() {
-	tray = new Tray(getTrayIcon("idle"));
-	const menu = Menu.buildFromTemplate([
-		{
-			label: "Show",
-			click: showWindow
-		},
-		{
-			label: "Settings",
-			click: () => {
-				showWindow();
-				mainWindow?.webContents.send("ui:open-setting");
-			}
-		},
-		{ type: "separator" },
-		{
-			label: "Quit",
-			click: () => app.quit()
-		}
-	]);
-	tray.setToolTip("Master OS AI");
-	tray.setContextMenu(menu);
-	tray.on("click", toggleWindow);
-}
-async function createInputWindow() {
-	if (inputWindow && !inputWindow.isDestroyed()) return;
-	try {
+
+//#endregion
+//#region src/windows/searchWindow.ts
+var SearchWindow = class {
+	window = null;
+	constructor() {
+		this.createWindow();
+	}
+	createWindow() {
 		const { width } = screen.getPrimaryDisplay().workAreaSize;
-		inputWindow = new BrowserWindow({
+		this.window = new BrowserWindow({
 			width: 600,
 			height: 60,
 			x: Math.floor((width - 600) / 2),
@@ -5263,36 +5271,177 @@ async function createInputWindow() {
 			focusable: true,
 			show: false,
 			webPreferences: {
-				preload: path.join(__dirname, "preload.cjs"),
+				preload: path.join(dirname, "preload.cjs"),
 				contextIsolation: true,
 				sandbox: true
 			}
 		});
-		inputWindow.on("close", (e$1) => {
+		this.attachEvents();
+	}
+	attachEvents() {
+		if (!this.window) return;
+		this.window.on("close", (e$1) => {
 			e$1.preventDefault();
-			inputWindow?.hide();
+			this.window?.hide();
 		});
-		inputWindow.on("blur", () => {
-			inputWindow?.hide();
+		this.window.on("blur", () => {
+			this.window?.hide();
 		});
-		if (process.env.NODE_ENV === "development") await inputWindow.loadURL("http://localhost:5173/command");
-		else if (process.env.VITE_DEV_SERVER_URL) await inputWindow.loadURL(process.env.VITE_DEV_SERVER_URL + "/command");
-		else await inputWindow.loadFile(path.join(__dirname, "../frontend/dist/index.html"), { search: "?route=command" });
+	}
+	async loadUI() {
+		if (!this.window) return;
+		try {
+			if (process.env.NODE_ENV === "development") await this.window.loadURL("http://localhost:5173/command");
+			else if (process.env.VITE_DEV_SERVER_URL) await this.window.loadURL(`${process.env.VITE_DEV_SERVER_URL}/command`);
+			else await this.window.loadFile(path.join(dirname, "../frontend/dist/index.html"), { search: "?route=command" });
+		} catch (error) {
+			console.error("Failed to load SearchWindow UI:", error);
+			this.destroy();
+			throw error;
+		}
+	}
+	show() {
+		if (!this.window) return;
+		this.window.show();
+		this.window.focus();
+	}
+	hide() {
+		this.window?.hide();
+	}
+	toggle() {
+		if (!this.window) return;
+		if (this.window.isVisible()) this.hide();
+		else this.show();
+	}
+	setSize(width, height) {
+		this.window?.setSize(width, height, true);
+	}
+	destroy() {
+		if (this.window && !this.window.isDestroyed()) this.window.destroy();
+		this.window = null;
+	}
+};
+
+//#endregion
+//#region src/sideCars/python/heath.ts
+async function checkPythonHealth() {
+	try {
+		if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, { headers: { "x-token": PYTHON_TOKEN } })).ok) {
+			console.log("✅ Python sidecar healthy");
+			return true;
+		}
+	} catch (error) {
+		console.error("❌ Python sidecar health check failed:", error);
+	}
+	return false;
+}
+
+//#endregion
+//#region src/sideCars/rust/process.ts
+var RustSidecar = class {
+	process = null;
+	rustDir;
+	rustExe;
+	modelPath;
+	port;
+	constructor(port) {
+		this.port = port;
+		this.rustDir = path.join(dirname, "../../rust");
+		this.rustExe = path.join(this.rustDir, "target/debug/rust.exe");
+		this.modelPath = path.join(this.rustDir, "models", "mistral-7b-instruct-v0.2.Q4_K_S.gguf");
+	}
+	validate() {
+		if (!fs.existsSync(this.rustExe)) this.fatalError("Rust Sidecar Missing", `rust.exe not found at:\n${this.rustExe}\n\nBuild it with: cargo build`);
+		if (!fs.existsSync(this.modelPath)) this.fatalError("Model Missing", `Model not found at:\n${this.modelPath}\n\nPlease download the model first.`);
+	}
+	start() {
+		this.validate();
+		this.process = spawn(this.rustExe, [], {
+			cwd: this.rustDir,
+			stdio: [
+				"ignore",
+				"pipe",
+				"pipe"
+			],
+			env: {
+				...process.env,
+				PORT: String(this.port),
+				RUST_LOG: "info"
+			},
+			windowsHide: true
+		});
+		this.attachLogs();
+		this.attachLifecycleHandlers();
+	}
+	async waitUntilReady(retries = 30, delayMs = 1e3) {
+		console.log("⏳ Waiting for Rust server...");
+		for (let i$1 = 0; i$1 < retries; i$1++) {
+			try {
+				if ((await fetch(`http://127.0.0.1:${this.port}/health`)).ok) {
+					console.log("✅ Rust server ready!");
+					return;
+				}
+			} catch {}
+			await new Promise((r$1) => setTimeout(r$1, delayMs));
+		}
+		throw new Error("Rust sidecar failed to become ready");
+	}
+	stop() {
+		if (this.process && !this.process.killed) {
+			this.process.kill();
+			this.process = null;
+		}
+	}
+	attachLogs() {
+		if (!this.process) return;
+		const { stdout, stderr } = this.process;
+		stdout?.on("data", (data) => {
+			console.log(`[Rust] ${data.toString().trim()}`);
+		});
+		stderr?.on("data", (data) => {
+			console.error(`[Rust Error] ${data.toString().trim()}`);
+		});
+	}
+	attachLifecycleHandlers() {
+		if (!this.process) return;
+		this.process.on("error", (err) => {
+			console.error("❌ Rust process error:", err);
+		});
+		this.process.on("exit", (code) => {
+			console.log(`Rust process exited with code ${code}`);
+		});
+	}
+	fatalError(title, message) {
+		console.error(`❌ ${title}`);
+		dialog.showErrorBox(title, message);
+		app.quit();
+		throw new Error(message);
+	}
+};
+
+//#endregion
+//#region src/main.ts
+let mainWindow = null;
+let inputWindow = null;
+let trayManager = null;
+let pythonProcess = null;
+let rustProcess = null;
+async function createInputWindow() {
+	if (inputWindow) return;
+	try {
+		inputWindow = new SearchWindow();
+		await inputWindow.loadUI();
 	} catch (err) {
 		console.error("Failed to create input window:", err);
-		if (inputWindow && !inputWindow.isDestroyed()) inputWindow.destroy();
+		if (inputWindow) inputWindow.destroy();
 		inputWindow = null;
 		throw err;
 	}
 }
 async function toggleInputWindow() {
-	if (!inputWindow || inputWindow.isDestroyed()) await createInputWindow();
-	if (inputWindow.isVisible()) inputWindow.hide();
-	else {
-		inputWindow.show();
-		inputWindow.focus();
-	}
-	inputWindow?.setSize(600, 60, true);
+	if (!inputWindow) await createInputWindow();
+	inputWindow?.toggle();
+	inputWindow?.setSize(600, 60);
 }
 const HOTKEY_ACTIONS = { "CommandOrControl+Shift+K": toggleInputWindow };
 function registerHotkeys() {
@@ -5305,7 +5454,7 @@ async function createWindow() {
 		height: 800,
 		show: false,
 		webPreferences: {
-			preload: path.join(__dirname, "preload.cjs"),
+			preload: path.join(dirname, "preload.cjs"),
 			nodeIntegration: false,
 			contextIsolation: true,
 			sandbox: true
@@ -5322,67 +5471,19 @@ async function createWindow() {
 	});
 	if (process.env.NODE_ENV === "development") await mainWindow.loadURL("http://localhost:5173");
 	else if (process.env.VITE_DEV_SERVER_URL) await mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-	else await mainWindow.loadFile(path.join(__dirname, "../frontend/dist/index.html"));
+	else await mainWindow.loadFile(path.join(dirname, "../frontend/dist/index.html"));
 	mainWindow.webContents.on("dom-ready", () => {
 		mainWindow?.webContents.executeJavaScript(`window.__CSP_NONCE__ = "${CSP_NONCE}";`);
 	});
 	await startSidecars();
-	await checkHealth();
+	await checkPythonHealth();
 }
 async function startSidecars() {
-	const backendDir = path.join(__dirname, "../../backend");
-	const rustDir = path.join(__dirname, "../../rust");
+	const backendDir = path.join(dirname, "../../backend");
 	const pythonPath = path.join(backendDir, "venv", "Scripts", "python.exe");
-	const rustExe = path.join(rustDir, "target/debug/rust.exe");
-	if (!fs.existsSync(rustExe)) {
-		console.error("❌ Rust executable not found!");
-		dialog.showErrorBox("Rust Sidecar Missing", `rust.exe not found at:\n${rustExe}\n\nBuild it with: cargo build`);
-		app.quit();
-		return;
-	}
-	const modelPath = path.join(rustDir, "models", "mistral-7b-instruct-v0.2.Q4_K_S.gguf");
-	if (!fs.existsSync(modelPath)) {
-		console.error("❌ Model file not found!");
-		dialog.showErrorBox("Model Missing", `Model not found at:\n${modelPath}\n\nPlease download the model first.`);
-		app.quit();
-		return;
-	}
-	rustProcess = spawn(rustExe, [], {
-		cwd: rustDir,
-		stdio: [
-			"ignore",
-			"pipe",
-			"pipe"
-		],
-		env: {
-			...process.env,
-			PORT: String(RUST_PORT),
-			RUST_LOG: "info"
-		},
-		windowsHide: true
-	});
-	if (rustProcess.stdout) rustProcess.stdout.on("data", (data) => {
-		console.log(`[Rust] ${data.toString().trim()}`);
-	});
-	if (rustProcess.stderr) rustProcess.stderr.on("data", (data) => {
-		console.error(`[Rust Error] ${data.toString().trim()}`);
-	});
-	rustProcess.on("error", (err) => {
-		console.error("❌ Rust process error:", err);
-	});
-	rustProcess.on("exit", (code) => {
-		console.log(`Rust process exited with code ${code}`);
-	});
-	console.log("⏳ Waiting for Rust server...");
-	for (let i$1 = 0; i$1 < 30; i$1++) {
-		try {
-			if ((await fetch(`http://127.0.0.1:${RUST_PORT}/health`)).ok) {
-				console.log("✅ Rust server ready!");
-				break;
-			}
-		} catch (e$1) {}
-		await new Promise((r$1) => setTimeout(r$1, 1e3));
-	}
+	rustProcess = new RustSidecar(RUST_PORT);
+	rustProcess.start();
+	await rustProcess.waitUntilReady();
 	console.log("🚀 Starting Python FastAPI server...");
 	pythonProcess = spawn(pythonPath, [
 		"-m",
@@ -5424,7 +5525,7 @@ async function startSidecars() {
 	});
 	for (let i$1 = 0; i$1 < 30; i$1++) {
 		try {
-			if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, { headers: { "x-token": PYTHON_TOKEN } })).ok) {
+			if ((await fetch$1(`http://127.0.0.1:${PYTHON_PORT}/api/health`, { headers: { "x-token": PYTHON_TOKEN } })).ok) {
 				console.log("✅ Python server ready!");
 				return;
 			}
@@ -5434,24 +5535,13 @@ async function startSidecars() {
 	console.error("❌ Python server failed to start");
 	dialog.showErrorBox("Server Start Failed", "Python backend did not respond in time");
 }
-const checkHealth = async () => {
-	try {
-		if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, { headers: { "x-token": PYTHON_TOKEN } })).ok) {
-			console.log("✅ Health check passed");
-			return true;
-		}
-	} catch (e$1) {
-		console.error("❌ Health check failed:", e$1);
-	}
-	return false;
-};
 ipcMain.handle("ai:request", async (_event, payload) => {
 	const { target = "python", endpoint, method = "POST", body } = payload;
 	const port = target === "rust" ? RUST_PORT : PYTHON_PORT;
 	try {
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), 18e4);
-		const res = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
+		const res = await fetch$1(`http://127.0.0.1:${port}${endpoint}`, {
 			method,
 			headers: {
 				"Content-Type": "application/json",
@@ -5475,7 +5565,7 @@ ipcMain.handle("ai:request-stream", async (event, payload) => {
 	const { endpoint, method = "POST", body } = payload;
 	console.log(`📡 Stream request: ${endpoint}`);
 	try {
-		const response = await fetch(`http://127.0.0.1:${PYTHON_PORT}${endpoint}`, {
+		const response = await fetch$1(`http://127.0.0.1:${PYTHON_PORT}${endpoint}`, {
 			method,
 			headers: {
 				"Content-Type": "application/json",
@@ -5528,7 +5618,7 @@ ipcMain.handle("dialog:openFolder", async () => {
 ipcMain.handle("file:search", async (_event, payload) => {
 	const { endpoint, method = "POST", query } = payload;
 	try {
-		const res = await fetch(`http://127.0.0.1:${PYTHON_PORT}${endpoint}?file_name=${query}`, {
+		const res = await fetch$1(`http://127.0.0.1:${PYTHON_PORT}${endpoint}?file_name=${query}`, {
 			method,
 			headers: {
 				"Content-Type": "application/json",
@@ -5558,10 +5648,10 @@ ipcMain.handle("open:path", async (_, targetPath) => {
 	}
 });
 ipcMain.handle("input:resize-window", (_, height) => {
-	inputWindow?.setSize(600, height, true);
+	inputWindow?.setSize(600, height);
 });
 ipcMain.handle("tray:set-status", (_e, status) => {
-	tray?.setImage(getTrayIcon(status));
+	trayManager?.setIcon(status);
 });
 ipcMain.handle("tray:set-badge", (_e, count) => {
 	app.setBadgeCount(count);
@@ -5572,7 +5662,7 @@ powerMonitor.on("resume", () => {
 app.on("before-quit", () => {
 	console.log("🛑 Shutting down processes...");
 	pythonProcess?.kill();
-	rustProcess?.kill();
+	rustProcess?.stop();
 });
 app.on("will-quit", () => {
 	globalShortcut.unregisterAll();
@@ -5581,7 +5671,7 @@ app.whenReady().then(async () => {
 	app.setLoginItemSettings({ openAtLogin: true });
 	if (process.platform === "darwin") app.dock?.hide();
 	await createWindow();
-	createTray();
+	trayManager = new TrayManager();
 	registerHotkeys();
 });
 
