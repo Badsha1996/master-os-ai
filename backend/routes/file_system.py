@@ -1,30 +1,45 @@
-from itertools import islice
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-import os
-from utility.state import search_state
+import sqlite3
+from database.init import get_connection
 
-'''
-Router and Endpoints 
-'''
 file_router = APIRouter(prefix="/file", tags=["filesystem"])
 
+
+# FTS5 stretegy 
 @file_router.post("/search")
 def search_files(file_name: str) -> JSONResponse:
     if not file_name:
         return JSONResponse(content={"files": []})
 
-    query = file_name.lower()
-    
-    matches_iterator = (
-        path for path in search_state.FILE_INDEX 
-        if query in os.path.basename(path).lower()
-    )
+    conn = get_connection()
+    try:
+        safe_query = file_name.replace('"', '""') 
+        
+        cursor = conn.execute("""
+            SELECT path 
+            FROM file_index 
+            WHERE filename MATCH ? 
+            ORDER BY rank 
+            LIMIT 50
+        """, (f'"{safe_query}"',))
 
-    limited_results = list(islice(matches_iterator, 50))
+        results = [row["path"] for row in cursor.fetchall()]
 
-    return JSONResponse(content={
-        "files": limited_results, 
-        "total_indexed": len(search_state.FILE_INDEX),
-        "indexing_status": "Indexing..." if search_state.IS_INDEXING else "Ready"
-    })
+        count_cursor = conn.execute("SELECT count(*) as cnt FROM file_index")
+        total_indexed = count_cursor.fetchone()["cnt"]
+
+        status_cursor = conn.execute("SELECT value FROM system_state WHERE key='indexing_status'")
+        status_row = status_cursor.fetchone()
+        status = status_row["value"] if status_row else "Ready"
+
+        return JSONResponse(content={
+            "files": results,
+            "total_indexed": total_indexed,
+            "indexing_status": status
+        })
+        
+    except sqlite3.Error as e:
+        return JSONResponse(content={"files": [], "error": "Search failed"}, status_code=500)
+    finally:
+        conn.close()
