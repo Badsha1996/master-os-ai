@@ -1,7 +1,7 @@
 import os
 from contextlib import asynccontextmanager
 import threading
-from fastapi import FastAPI, Header, HTTPException, Depends, Request
+from fastapi import FastAPI, Header, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from llm.llm_client import LLMClient
 from routes.file_system import file_router
@@ -15,7 +15,6 @@ load_dotenv()
 
 EXPECTED_TOKEN = os.environ.get("MASTER_TOKEN", "")
 PORT = int(os.environ.get("PYTHON_PORT", "8000"))
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
