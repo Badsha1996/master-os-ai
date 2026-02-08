@@ -146,9 +146,6 @@ var SearchWindow = class {
 			e$1.preventDefault();
 			this.window?.hide();
 		});
-		this.window.on("blur", () => {
-			this.window?.hide();
-		});
 	}
 	async loadUI() {
 		if (!this.window) return;

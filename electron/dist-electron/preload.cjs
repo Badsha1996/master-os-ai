@@ -12,8 +12,6 @@ const allowedOnChannels = [
 const allowedInvokeChannels = [
 	"ai:request",
 	"ai:request-stream",
-	"ai:cancel",
-	"dialog:openFolder",
 	"file:search"
 ];
 electron.contextBridge.exposeInMainWorld("electronAPI", {

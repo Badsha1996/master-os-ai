@@ -42,10 +42,6 @@ export class SearchWindow {
       e.preventDefault();
       this.window?.hide();
     });
-
-    this.window.on("blur", () => {
-      this.window?.hide();
-    });
   }
 
   async loadUI() {
