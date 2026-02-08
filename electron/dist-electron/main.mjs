@@ -1,6 +1,9 @@
 import { createRequire } from "node:module";
-import { BrowserWindow, Menu, Tray, app, dialog, globalShortcut, ipcMain, nativeImage, powerMonitor, screen, session, shell } from "electron";
+import { BrowserWindow, Menu, Tray, app, dialog, globalShortcut, ipcMain, nativeImage, screen, session, shell } from "electron";
 import path from "path";
+import { fileURLToPath } from "url";
+import { randomBytes } from "crypto";
+import { spawn } from "child_process";
 import fs from "fs";
 import http from "node:http";
 import https from "node:https";
@@ -11,9 +14,6 @@ import { deprecate, promisify, types } from "node:util";
 import { format } from "node:url";
 import { isIP } from "node:net";
 import { createReadStream, promises } from "node:fs";
-import { fileURLToPath } from "url";
-import { randomBytes } from "crypto";
-import { spawn } from "child_process";
 
 //#region rolldown:runtime
 var __create = Object.create;
@@ -42,6 +42,448 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 	enumerable: true
 }) : target, mod));
 var __require = /* @__PURE__ */ createRequire(import.meta.url);
+
+//#endregion
+//#region src/tray/trayManager.ts
+var TrayManager = class {
+	tray;
+	constructor(onSettingsClick) {
+		const image = this.getIcon("idle");
+		image.setTemplateImage(true);
+		this.tray = new Tray(image);
+		const menu = Menu.buildFromTemplate([
+			{
+				label: "Settings",
+				click: () => onSettingsClick?.()
+			},
+			{ type: "separator" },
+			{
+				label: "Quit",
+				click: () => app.quit()
+			}
+		]);
+		this.tray.setToolTip("Master OS AI");
+		this.tray.setContextMenu(menu);
+	}
+	setStatus(status) {
+		this.tray.setImage(this.getIcon(status));
+	}
+	destroy() {
+		this.tray.destroy();
+	}
+	setIcon(status) {
+		this.tray.setImage(this.getIcon(status));
+	}
+	getIcon(status) {
+		return nativeImage.createFromPath(path.join(process.cwd(), "assets", {
+			idle: "tray.png",
+			thinking: "tray-thinking.png",
+			error: "tray-error.png"
+		}[status]));
+	}
+};
+
+//#endregion
+//#region src/constants.ts
+const filename = fileURLToPath(import.meta.url);
+const dirname = path.dirname(filename);
+const PYTHON_TOKEN = "54321";
+const PYTHON_PORT = 8e3;
+const RUST_PORT = 5005;
+const CSP_NONCE = randomBytes(16).toString("base64");
+
+//#endregion
+//#region src/security/session.ts
+async function setupSessionSecurity() {
+	const styleSrc = !app.isPackaged ? "'self' 'unsafe-inline'" : `'self' 'nonce-${CSP_NONCE}'`;
+	session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+		callback({ responseHeaders: {
+			...details.responseHeaders,
+			"Content-Security-Policy": [
+				"default-src 'self'",
+				"script-src 'self'",
+				`style-src ${styleSrc}`,
+				"img-src 'self' data:",
+				`connect-src 'self' http://127.0.0.1:${PYTHON_PORT} http://127.0.0.1:${RUST_PORT}`
+			].join("; ")
+		} });
+	});
+}
+
+//#endregion
+//#region src/windows/searchWindow.ts
+var SearchWindow = class {
+	window = null;
+	constructor() {
+		this.createWindow();
+	}
+	createWindow() {
+		const { width } = screen.getPrimaryDisplay().workAreaSize;
+		this.window = new BrowserWindow({
+			width: 600,
+			height: 60,
+			x: Math.floor((width - 600) / 2),
+			y: 40,
+			frame: false,
+			transparent: true,
+			alwaysOnTop: true,
+			resizable: false,
+			movable: false,
+			skipTaskbar: true,
+			focusable: true,
+			show: false,
+			webPreferences: {
+				preload: path.join(dirname, "preload.cjs"),
+				contextIsolation: true,
+				sandbox: true
+			}
+		});
+		this.attachEvents();
+	}
+	attachEvents() {
+		if (!this.window) return;
+		this.window.on("close", (e$1) => {
+			e$1.preventDefault();
+			this.window?.hide();
+		});
+		this.window.on("blur", () => {
+			this.window?.hide();
+		});
+	}
+	async loadUI() {
+		if (!this.window) return;
+		try {
+			if (process.env.NODE_ENV === "development") await this.window.loadURL("http://localhost:5173/command");
+			else if (process.env.VITE_DEV_SERVER_URL) await this.window.loadURL(`${process.env.VITE_DEV_SERVER_URL}/command`);
+			else await this.window.loadFile(path.join(dirname, "../frontend/dist/index.html"), { search: "?route=command" });
+		} catch (error) {
+			console.error("Failed to load SearchWindow UI:", error);
+			this.destroy();
+			throw error;
+		}
+	}
+	show() {
+		if (!this.window) return;
+		this.window.show();
+		this.window.focus();
+	}
+	hide() {
+		this.window?.hide();
+	}
+	toggle() {
+		if (!this.window) return;
+		if (this.window.isVisible()) this.hide();
+		else this.show();
+	}
+	setSize(width, height) {
+		this.window?.setSize(width, height, true);
+	}
+	destroy() {
+		if (this.window && !this.window.isDestroyed()) this.window.destroy();
+		this.window = null;
+	}
+};
+
+//#endregion
+//#region src/sideCars/python/heath.ts
+async function checkPythonHealth() {
+	try {
+		if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, { headers: { "x-token": PYTHON_TOKEN } })).ok) {
+			console.log("✅ Python sidecar healthy");
+			return true;
+		}
+	} catch (error) {
+		console.error("❌ Python sidecar health check failed:", error);
+	}
+	return false;
+}
+
+//#endregion
+//#region src/sideCars/rust/process.ts
+var RustSidecar = class {
+	process = null;
+	rustDir;
+	rustExe;
+	modelPath;
+	port;
+	constructor(port) {
+		this.port = port;
+		this.rustDir = path.join(dirname, "../../rust");
+		this.rustExe = path.join(this.rustDir, "target/debug/rust.exe");
+		this.modelPath = path.join(this.rustDir, "models", "mistral-7b-instruct-v0.2.Q4_K_S.gguf");
+	}
+	validate() {
+		if (!fs.existsSync(this.rustExe)) this.fatalError("Rust Sidecar Missing", `rust.exe not found at:\n${this.rustExe}\n\nBuild it with: cargo build`);
+		if (!fs.existsSync(this.modelPath)) this.fatalError("Model Missing", `Model not found at:\n${this.modelPath}\n\nPlease download the model first.`);
+	}
+	start() {
+		console.log("🚀 Starting Rust server...");
+		this.validate();
+		this.process = spawn(this.rustExe, [], {
+			cwd: this.rustDir,
+			stdio: [
+				"ignore",
+				"pipe",
+				"pipe"
+			],
+			env: {
+				...process.env,
+				PORT: String(this.port),
+				RUST_LOG: "info"
+			},
+			windowsHide: true
+		});
+		this.attachLogs();
+		this.attachLifecycleHandlers();
+	}
+	async waitUntilReady(retries = 30, delayMs = 1e3) {
+		console.log("⏳ Waiting for Rust server...");
+		for (let i$1 = 0; i$1 < retries; i$1++) {
+			try {
+				if ((await fetch(`http://127.0.0.1:${this.port}/health`)).ok) {
+					console.log("✅ Rust server ready!");
+					return;
+				}
+			} catch {}
+			await new Promise((r$1) => setTimeout(r$1, delayMs));
+		}
+		throw new Error("Rust sidecar failed to become ready");
+	}
+	stop() {
+		if (this.process && !this.process.killed) {
+			this.process.kill();
+			this.process = null;
+		}
+	}
+	attachLogs() {
+		if (!this.process) return;
+		const { stdout, stderr } = this.process;
+		stdout?.on("data", (data) => {
+			console.log(`[Rust] ${data.toString().trim()}`);
+		});
+		stderr?.on("data", (data) => {
+			console.error(`[Rust Error] ${data.toString().trim()}`);
+		});
+	}
+	attachLifecycleHandlers() {
+		if (!this.process) return;
+		this.process.on("error", (err) => {
+			console.error("❌ Rust process error:", err);
+		});
+		this.process.on("exit", (code) => {
+			console.log(`Rust process exited with code ${code}`);
+		});
+	}
+	fatalError(title, message) {
+		console.error(`❌ ${title}`);
+		dialog.showErrorBox(title, message);
+		app.quit();
+		throw new Error(message);
+	}
+};
+
+//#endregion
+//#region src/sideCars/python/process.ts
+var PythonSidecar = class {
+	process = null;
+	pythonPath;
+	backendDir;
+	constructor(port) {
+		this.backendDir = path.join(dirname, "../../backend");
+		this.pythonPath = path.join(this.backendDir, "venv", "Scripts", "python.exe");
+	}
+	start() {
+		console.log("🚀 Starting Python FastAPI server...");
+		this.process = spawn(this.pythonPath, [
+			"-m",
+			"uvicorn",
+			"main:app",
+			"--host",
+			"127.0.0.1",
+			"--port",
+			String(PYTHON_PORT),
+			"--log-level",
+			"info"
+		], {
+			cwd: this.backendDir,
+			env: {
+				...process.env,
+				PYTHON_TOKEN,
+				RUST_URL: `http://127.0.0.1:${RUST_PORT}`,
+				VIRTUAL_ENV: path.join(this.backendDir, "venv"),
+				PATH: `${path.join(this.backendDir, "venv", "Scripts")};${process.env.PATH}`
+			},
+			stdio: [
+				"ignore",
+				"pipe",
+				"pipe"
+			],
+			windowsHide: true
+		});
+		this.attachLogs();
+		this.attachLifecycleHandlers();
+	}
+	stop() {
+		if (this.process && !this.process.killed) {
+			this.process.kill();
+			this.process = null;
+		}
+	}
+	async waitUntilReady(retries = 30, delayMs = 1e3) {
+		console.log("⏳ Waiting for Python server...");
+		for (let i$1 = 0; i$1 < retries; i$1++) {
+			try {
+				if (await checkPythonHealth()) {
+					console.log("✅ Python server ready!");
+					return;
+				}
+			} catch (err) {}
+			await new Promise((r$1) => setTimeout(r$1, delayMs));
+		}
+		this.fatalError("Python server failed to start", "Python backend did not respond in time");
+	}
+	attachLogs() {
+		if (!this.process) return;
+		const { stdout, stderr } = this.process;
+		stdout?.on("data", (data) => {
+			console.log(`[Python] ${data.toString().trim()}`);
+		});
+		stderr?.on("data", (data) => {
+			console.error(`[Python Error] ${data.toString().trim()}`);
+		});
+	}
+	attachLifecycleHandlers() {
+		if (!this.process) return;
+		this.process.on("error", (err) => {
+			console.error("❌ Python process error:", err);
+		});
+		this.process.on("exit", (code) => {
+			console.log(`Python process exited with code ${code}`);
+		});
+	}
+	fatalError(title, message) {
+		console.error(`❌ ${title}`);
+		dialog.showErrorBox(title, message);
+		throw new Error(message);
+	}
+};
+
+//#endregion
+//#region src/windows/appWindow.ts
+var AppWindow = class {
+	window = null;
+	isQuittingRef;
+	constructor(isQuittingRef) {
+		this.isQuittingRef = isQuittingRef;
+		this.createWindow();
+	}
+	createWindow() {
+		this.window = new BrowserWindow({
+			width: 800,
+			height: 600,
+			show: false,
+			webPreferences: {
+				preload: path.join(dirname, "preload.cjs"),
+				contextIsolation: true,
+				sandbox: true
+			}
+		});
+		this.attachEvents();
+	}
+	attachEvents() {
+		if (!this.window) return;
+		this.window.once("ready-to-show", () => this.show());
+		this.window.on("close", (e$1) => {
+			if (!this.isQuittingRef()) {
+				e$1.preventDefault();
+				this.window?.hide();
+			}
+		});
+		this.window.webContents.setWindowOpenHandler(({ url }) => {
+			shell.openExternal(url);
+			return { action: "deny" };
+		});
+		this.window.webContents.on("dom-ready", () => {
+			this.window?.webContents.executeJavaScript(`window.__CSP_NONCE__ = "${CSP_NONCE}";`);
+		});
+	}
+	async loadUI() {
+		if (!this.window) return;
+		try {
+			if (process.env.NODE_ENV === "development") await this.window.loadURL("http://localhost:5173");
+			else if (process.env.VITE_DEV_SERVER_URL) await this.window.loadURL(`${process.env.VITE_DEV_SERVER_URL}`);
+			else await this.window.loadFile(path.join(dirname, "../frontend/dist/index.html"));
+		} catch (error) {
+			console.error("Failed to load SearchWindow UI:", error);
+			this.destroy();
+			throw error;
+		}
+	}
+	show() {
+		if (!this.window) return;
+		this.window.show();
+	}
+	hide() {
+		this.window?.hide();
+	}
+	getWindow() {
+		return this.window;
+	}
+	toggle() {
+		if (!this.window) return;
+		if (this.window.isVisible()) this.hide();
+		else this.show();
+	}
+	destroy() {
+		if (this.window && !this.window.isDestroyed()) this.window.destroy();
+		this.window = null;
+	}
+};
+
+//#endregion
+//#region src/ipc/files.ts
+function registerFileHandlers() {
+	ipcMain.handle("file:search", async (_event, payload) => {
+		const { endpoint, method = "POST", query } = payload;
+		try {
+			const res = await fetch(`http://127.0.0.1:${PYTHON_PORT}${endpoint}?file_name=${query}`, {
+				method,
+				headers: {
+					"Content-Type": "application/json",
+					"x-token": PYTHON_TOKEN
+				}
+			});
+			if (!res.ok) throw new Error(`Backend error: ${res.statusText}`);
+			return await res.json();
+		} catch (error) {
+			console.error("❌ Stream setup failed:", error.message);
+			return { error: error.message };
+		}
+	});
+	ipcMain.handle("open:path", async (_, targetPath) => {
+		try {
+			if (!fs.existsSync(targetPath)) throw new Error(`Path does not exist  ${targetPath}`);
+			const stat$1 = fs.statSync(targetPath);
+			if (stat$1.isFile()) await shell.openPath(targetPath);
+			else if (stat$1.isDirectory()) await shell.openPath(targetPath);
+			return { success: true };
+		} catch (err) {
+			console.log(err);
+			return {
+				success: false,
+				error: err.message
+			};
+		}
+	});
+}
+
+//#endregion
+//#region src/ipc/input.ts
+function registerSearchBoxHandlers(ctx) {
+	ipcMain.handle("input:resize-window", (_, height) => {
+		ctx.getInputWindow()?.setSize(600, height);
+	});
+}
 
 //#endregion
 //#region node_modules/data-uri-to-buffer/dist/index.js
@@ -5182,242 +5624,97 @@ function fixResponseChunkedTransferBadEnding(request, errorCallback) {
 }
 
 //#endregion
-//#region src/tray/trayManager.ts
-var TrayManager = class {
-	tray;
-	constructor(onSettingsClick) {
-		const image = this.getIcon("idle");
-		image.setTemplateImage(true);
-		this.tray = new Tray(image);
-		const menu = Menu.buildFromTemplate([
-			{
-				label: "Settings",
-				click: () => onSettingsClick?.()
-			},
-			{ type: "separator" },
-			{
-				label: "Quit",
-				click: () => app.quit()
+//#region src/ipc/ai.ts
+function registerAIHandlers() {
+	ipcMain.handle("ai:request", async (_event, payload) => {
+		const { target = "python", endpoint, method = "POST", body } = payload;
+		const port = target === "rust" ? RUST_PORT : PYTHON_PORT;
+		try {
+			const controller = new AbortController();
+			const timeout = setTimeout(() => controller.abort(), 180 * 1e3);
+			const res = await fetch$1(`http://127.0.0.1:${port}${endpoint}`, {
+				method,
+				headers: {
+					"Content-Type": "application/json",
+					"x-token": PYTHON_TOKEN
+				},
+				body: body ? JSON.stringify(body) : void 0,
+				signal: controller.signal
+			});
+			clearTimeout(timeout);
+			if (!res.ok) {
+				const errorText = await res.text();
+				throw new Error(`Backend error: ${res.statusText} - ${errorText}`);
 			}
-		]);
-		this.tray.setToolTip("Master OS AI");
-		this.tray.setContextMenu(menu);
-	}
-	setStatus(status) {
-		this.tray.setImage(this.getIcon(status));
-	}
-	destroy() {
-		this.tray.destroy();
-	}
-	setIcon(status) {
-		this.tray.setImage(this.getIcon(status));
-	}
-	getIcon(status) {
-		return nativeImage.createFromPath(path.join(process.cwd(), "assets", {
-			idle: "tray.png",
-			thinking: "tray-thinking.png",
-			error: "tray-error.png"
-		}[status]));
-	}
-};
-
-//#endregion
-//#region src/constants.ts
-const filename = fileURLToPath(import.meta.url);
-const dirname = path.dirname(filename);
-const PYTHON_TOKEN = "54321";
-const PYTHON_PORT = 8e3;
-const RUST_PORT = 5005;
-const CSP_NONCE = randomBytes(16).toString("base64");
-
-//#endregion
-//#region src/security/session.ts
-async function setupSessionSecurity() {
-	const styleSrc = !app.isPackaged ? "'self' 'unsafe-inline'" : `'self' 'nonce-${CSP_NONCE}'`;
-	session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-		callback({ responseHeaders: {
-			...details.responseHeaders,
-			"Content-Security-Policy": [
-				"default-src 'self'",
-				"script-src 'self'",
-				`style-src ${styleSrc}`,
-				"img-src 'self' data:",
-				`connect-src 'self' http://127.0.0.1:${PYTHON_PORT} http://127.0.0.1:${RUST_PORT}`
-			].join("; ")
-		} });
+			return await res.json();
+		} catch (err) {
+			console.error(`IPC Request Failed [${endpoint}]:`, err.message);
+			return { error: err.message || "Request failed" };
+		}
+	});
+	ipcMain.handle("ai:request-stream", async (event, payload) => {
+		const { endpoint, method = "POST", body } = payload;
+		console.log(`📡 Stream request: ${endpoint}`);
+		try {
+			const response = await fetch$1(`http://127.0.0.1:${PYTHON_PORT}${endpoint}`, {
+				method,
+				headers: {
+					"Content-Type": "application/json",
+					"x-token": PYTHON_TOKEN,
+					Accept: "text/event-stream"
+				},
+				body: JSON.stringify(body)
+			});
+			if (!response.ok) {
+				const errorText = await response.text();
+				throw new Error(`Backend error: ${response.statusText} - ${errorText}`);
+			}
+			if (!response.body) throw new Error("Response body is empty");
+			let buffer = "";
+			response.body.on("data", (chunk) => {
+				buffer += chunk.toString();
+				let boundary = buffer.indexOf("\n\n");
+				while (boundary !== -1) {
+					const evt = buffer.slice(0, boundary).trim();
+					buffer = buffer.slice(boundary + 2);
+					if (evt.startsWith("data:")) {
+						const jsonStr = evt.slice(5).trim();
+						try {
+							const parsed = JSON.parse(jsonStr);
+							event.sender.send("ai:stream-data", parsed);
+						} catch (e$1) {
+							console.warn("Failed to parse SSE data:", jsonStr);
+						}
+					}
+					boundary = buffer.indexOf("\n\n");
+				}
+			});
+			response.body.on("end", () => {
+				event.sender.send("ai:stream-end");
+			});
+			response.body.on("error", (err) => {
+				console.error("❌ Stream error:", err);
+				event.sender.send("ai:stream-error", { error: err.message });
+			});
+			return { success: true };
+		} catch (error) {
+			console.error("❌ Stream setup failed:", error.message);
+			event.sender.send("ai:stream-error", { error: error.message });
+			return { error: error.message };
+		}
 	});
 }
 
 //#endregion
-//#region src/windows/searchWindow.ts
-var SearchWindow = class {
-	window = null;
-	constructor() {
-		this.createWindow();
-	}
-	createWindow() {
-		const { width } = screen.getPrimaryDisplay().workAreaSize;
-		this.window = new BrowserWindow({
-			width: 600,
-			height: 60,
-			x: Math.floor((width - 600) / 2),
-			y: 40,
-			frame: false,
-			transparent: true,
-			alwaysOnTop: true,
-			resizable: false,
-			movable: false,
-			skipTaskbar: true,
-			focusable: true,
-			show: false,
-			webPreferences: {
-				preload: path.join(dirname, "preload.cjs"),
-				contextIsolation: true,
-				sandbox: true
-			}
-		});
-		this.attachEvents();
-	}
-	attachEvents() {
-		if (!this.window) return;
-		this.window.on("close", (e$1) => {
-			e$1.preventDefault();
-			this.window?.hide();
-		});
-		this.window.on("blur", () => {
-			this.window?.hide();
-		});
-	}
-	async loadUI() {
-		if (!this.window) return;
-		try {
-			if (process.env.NODE_ENV === "development") await this.window.loadURL("http://localhost:5173/command");
-			else if (process.env.VITE_DEV_SERVER_URL) await this.window.loadURL(`${process.env.VITE_DEV_SERVER_URL}/command`);
-			else await this.window.loadFile(path.join(dirname, "../frontend/dist/index.html"), { search: "?route=command" });
-		} catch (error) {
-			console.error("Failed to load SearchWindow UI:", error);
-			this.destroy();
-			throw error;
-		}
-	}
-	show() {
-		if (!this.window) return;
-		this.window.show();
-		this.window.focus();
-	}
-	hide() {
-		this.window?.hide();
-	}
-	toggle() {
-		if (!this.window) return;
-		if (this.window.isVisible()) this.hide();
-		else this.show();
-	}
-	setSize(width, height) {
-		this.window?.setSize(width, height, true);
-	}
-	destroy() {
-		if (this.window && !this.window.isDestroyed()) this.window.destroy();
-		this.window = null;
-	}
-};
-
-//#endregion
-//#region src/sideCars/python/heath.ts
-async function checkPythonHealth() {
-	try {
-		if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, { headers: { "x-token": PYTHON_TOKEN } })).ok) {
-			console.log("✅ Python sidecar healthy");
-			return true;
-		}
-	} catch (error) {
-		console.error("❌ Python sidecar health check failed:", error);
-	}
-	return false;
+//#region src/ipc/tray.ts
+function registerTrayHandlers(ctx) {
+	ipcMain.handle("tray:set-status", (_e, status) => {
+		ctx.getTrayManager()?.setIcon(status);
+	});
+	ipcMain.handle("tray:set-badge", (_e, count) => {
+		app.setBadgeCount(count);
+	});
 }
-
-//#endregion
-//#region src/sideCars/rust/process.ts
-var RustSidecar = class {
-	process = null;
-	rustDir;
-	rustExe;
-	modelPath;
-	port;
-	constructor(port) {
-		this.port = port;
-		this.rustDir = path.join(dirname, "../../rust");
-		this.rustExe = path.join(this.rustDir, "target/debug/rust.exe");
-		this.modelPath = path.join(this.rustDir, "models", "mistral-7b-instruct-v0.2.Q4_K_S.gguf");
-	}
-	validate() {
-		if (!fs.existsSync(this.rustExe)) this.fatalError("Rust Sidecar Missing", `rust.exe not found at:\n${this.rustExe}\n\nBuild it with: cargo build`);
-		if (!fs.existsSync(this.modelPath)) this.fatalError("Model Missing", `Model not found at:\n${this.modelPath}\n\nPlease download the model first.`);
-	}
-	start() {
-		this.validate();
-		this.process = spawn(this.rustExe, [], {
-			cwd: this.rustDir,
-			stdio: [
-				"ignore",
-				"pipe",
-				"pipe"
-			],
-			env: {
-				...process.env,
-				PORT: String(this.port),
-				RUST_LOG: "info"
-			},
-			windowsHide: true
-		});
-		this.attachLogs();
-		this.attachLifecycleHandlers();
-	}
-	async waitUntilReady(retries = 30, delayMs = 1e3) {
-		console.log("⏳ Waiting for Rust server...");
-		for (let i$1 = 0; i$1 < retries; i$1++) {
-			try {
-				if ((await fetch(`http://127.0.0.1:${this.port}/health`)).ok) {
-					console.log("✅ Rust server ready!");
-					return;
-				}
-			} catch {}
-			await new Promise((r$1) => setTimeout(r$1, delayMs));
-		}
-		throw new Error("Rust sidecar failed to become ready");
-	}
-	stop() {
-		if (this.process && !this.process.killed) {
-			this.process.kill();
-			this.process = null;
-		}
-	}
-	attachLogs() {
-		if (!this.process) return;
-		const { stdout, stderr } = this.process;
-		stdout?.on("data", (data) => {
-			console.log(`[Rust] ${data.toString().trim()}`);
-		});
-		stderr?.on("data", (data) => {
-			console.error(`[Rust Error] ${data.toString().trim()}`);
-		});
-	}
-	attachLifecycleHandlers() {
-		if (!this.process) return;
-		this.process.on("error", (err) => {
-			console.error("❌ Rust process error:", err);
-		});
-		this.process.on("exit", (code) => {
-			console.log(`Rust process exited with code ${code}`);
-		});
-	}
-	fatalError(title, message) {
-		console.error(`❌ ${title}`);
-		dialog.showErrorBox(title, message);
-		app.quit();
-		throw new Error(message);
-	}
-};
 
 //#endregion
 //#region src/main.ts
@@ -5450,222 +5747,27 @@ function registerHotkeys() {
 }
 async function createWindow() {
 	await setupSessionSecurity();
-	mainWindow = new BrowserWindow({
-		width: 1200,
-		height: 800,
-		show: false,
-		webPreferences: {
-			preload: path.join(dirname, "preload.cjs"),
-			nodeIntegration: false,
-			contextIsolation: true,
-			sandbox: true
-		}
-	});
-	mainWindow.once("ready-to-show", () => mainWindow?.show());
-	mainWindow.on("close", (e$1) => {
-		if (!isQuitting) {
-			e$1.preventDefault();
-			mainWindow?.hide();
-		}
-	});
-	mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-		shell.openExternal(url);
-		return { action: "deny" };
-	});
-	if (process.env.NODE_ENV === "development") await mainWindow.loadURL("http://localhost:5173");
-	else if (process.env.VITE_DEV_SERVER_URL) await mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-	else await mainWindow.loadFile(path.join(dirname, "../frontend/dist/index.html"));
-	mainWindow.webContents.on("dom-ready", () => {
-		mainWindow?.webContents.executeJavaScript(`window.__CSP_NONCE__ = "${CSP_NONCE}";`);
-	});
+	mainWindow = new AppWindow(() => isQuitting);
+	await mainWindow.loadUI();
 	await startSidecars();
 	await checkPythonHealth();
 }
 async function startSidecars() {
-	const backendDir = path.join(dirname, "../../backend");
-	const pythonPath = path.join(backendDir, "venv", "Scripts", "python.exe");
 	rustProcess = new RustSidecar(RUST_PORT);
 	rustProcess.start();
 	await rustProcess.waitUntilReady();
-	console.log("🚀 Starting Python FastAPI server...");
-	pythonProcess = spawn(pythonPath, [
-		"-m",
-		"uvicorn",
-		"main:app",
-		"--host",
-		"127.0.0.1",
-		"--port",
-		String(PYTHON_PORT),
-		"--log-level",
-		"info"
-	], {
-		cwd: backendDir,
-		env: {
-			...process.env,
-			PYTHON_TOKEN,
-			RUST_URL: `http://127.0.0.1:${RUST_PORT}`,
-			VIRTUAL_ENV: path.join(backendDir, "venv"),
-			PATH: `${path.join(backendDir, "venv", "Scripts")};${process.env.PATH}`
-		},
-		stdio: [
-			"ignore",
-			"pipe",
-			"pipe"
-		],
-		windowsHide: true
-	});
-	if (pythonProcess.stdout) pythonProcess.stdout.on("data", (data) => {
-		console.log(`[Python] ${data.toString().trim()}`);
-	});
-	if (pythonProcess.stderr) pythonProcess.stderr.on("data", (data) => {
-		console.error(`[Python Error] ${data.toString().trim()}`);
-	});
-	pythonProcess.on("error", (err) => {
-		console.error("❌ Python process error:", err);
-	});
-	pythonProcess.on("exit", (code) => {
-		console.log(`Python process exited with code ${code}`);
-	});
-	for (let i$1 = 0; i$1 < 30; i$1++) {
-		try {
-			if ((await fetch$1(`http://127.0.0.1:${PYTHON_PORT}/api/health`, { headers: { "x-token": PYTHON_TOKEN } })).ok) {
-				console.log("✅ Python server ready!");
-				return;
-			}
-		} catch (e$1) {}
-		await new Promise((r$1) => setTimeout(r$1, 1e3));
-	}
-	console.error("❌ Python server failed to start");
-	dialog.showErrorBox("Server Start Failed", "Python backend did not respond in time");
+	pythonProcess = new PythonSidecar(PYTHON_PORT);
+	pythonProcess.start();
+	await pythonProcess.waitUntilReady();
 }
-ipcMain.handle("ai:request", async (_event, payload) => {
-	const { target = "python", endpoint, method = "POST", body } = payload;
-	const port = target === "rust" ? RUST_PORT : PYTHON_PORT;
-	try {
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), 18e4);
-		const res = await fetch$1(`http://127.0.0.1:${port}${endpoint}`, {
-			method,
-			headers: {
-				"Content-Type": "application/json",
-				"x-token": PYTHON_TOKEN
-			},
-			body: body ? JSON.stringify(body) : void 0,
-			signal: controller.signal
-		});
-		clearTimeout(timeout);
-		if (!res.ok) {
-			const errorText = await res.text();
-			throw new Error(`Backend error: ${res.statusText} - ${errorText}`);
-		}
-		return await res.json();
-	} catch (error) {
-		console.error(`IPC Request Failed [${endpoint}]:`, error.message);
-		return { error: error.message || "Request failed" };
-	}
-});
-ipcMain.handle("ai:request-stream", async (event, payload) => {
-	const { endpoint, method = "POST", body } = payload;
-	console.log(`📡 Stream request: ${endpoint}`);
-	try {
-		const response = await fetch$1(`http://127.0.0.1:${PYTHON_PORT}${endpoint}`, {
-			method,
-			headers: {
-				"Content-Type": "application/json",
-				"x-token": PYTHON_TOKEN,
-				Accept: "text/event-stream"
-			},
-			body: JSON.stringify(body)
-		});
-		if (!response.ok) {
-			const errorText = await response.text();
-			throw new Error(`Backend error: ${response.statusText} - ${errorText}`);
-		}
-		if (!response.body) throw new Error("Response body is empty");
-		let buffer = "";
-		response.body.on("data", (chunk) => {
-			buffer += chunk.toString();
-			let boundary = buffer.indexOf("\n\n");
-			while (boundary !== -1) {
-				const evt = buffer.slice(0, boundary).trim();
-				buffer = buffer.slice(boundary + 2);
-				if (evt.startsWith("data:")) {
-					const jsonStr = evt.slice(5).trim();
-					try {
-						const parsed = JSON.parse(jsonStr);
-						event.sender.send("ai:stream-data", parsed);
-					} catch (e$1) {
-						console.warn("Failed to parse SSE data:", jsonStr);
-					}
-				}
-				boundary = buffer.indexOf("\n\n");
-			}
-		});
-		response.body.on("end", () => {
-			event.sender.send("ai:stream-end");
-		});
-		response.body.on("error", (err) => {
-			console.error("❌ Stream error:", err);
-			event.sender.send("ai:stream-error", { error: err.message });
-		});
-		return { success: true };
-	} catch (error) {
-		console.error("❌ Stream setup failed:", error.message);
-		event.sender.send("ai:stream-error", { error: error.message });
-		return { error: error.message };
-	}
-});
-ipcMain.handle("dialog:openFolder", async () => {
-	return (await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory", "multiSelections"] })).filePaths;
-});
-ipcMain.handle("file:search", async (_event, payload) => {
-	const { endpoint, method = "POST", query } = payload;
-	try {
-		const res = await fetch$1(`http://127.0.0.1:${PYTHON_PORT}${endpoint}?file_name=${query}`, {
-			method,
-			headers: {
-				"Content-Type": "application/json",
-				"x-token": PYTHON_TOKEN
-			}
-		});
-		if (!res.ok) throw new Error(`Backend error: ${res.statusText}`);
-		return await res.json();
-	} catch (error) {
-		console.error("❌ Stream setup failed:", error.message);
-		return { error: error.message };
-	}
-});
-ipcMain.handle("open:path", async (_, targetPath) => {
-	try {
-		if (!fs.existsSync(targetPath)) throw new Error(`Path does not exist  ${targetPath}`);
-		const stat$1 = fs.statSync(targetPath);
-		if (stat$1.isFile()) await shell.openPath(targetPath);
-		else if (stat$1.isDirectory()) await shell.openPath(targetPath);
-		return { success: true };
-	} catch (err) {
-		console.log(err);
-		return {
-			success: false,
-			error: err.message
-		};
-	}
-});
-ipcMain.handle("input:resize-window", (_, height) => {
-	inputWindow?.setSize(600, height);
-});
-ipcMain.handle("tray:set-status", (_e, status) => {
-	trayManager?.setIcon(status);
-});
-ipcMain.handle("tray:set-badge", (_e, count) => {
-	app.setBadgeCount(count);
-});
-powerMonitor.on("resume", () => {
-	mainWindow?.webContents.send("system:resume");
-});
+registerAIHandlers();
+registerFileHandlers();
+registerSearchBoxHandlers({ getInputWindow: () => inputWindow });
+registerTrayHandlers({ getTrayManager: () => trayManager });
 app.on("before-quit", () => {
 	isQuitting = true;
 	console.log("🛑 Shutting down processes...");
-	pythonProcess?.kill();
+	pythonProcess?.stop();
 	rustProcess?.stop();
 });
 app.on("will-quit", () => {
