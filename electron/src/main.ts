@@ -23,12 +23,13 @@ import { ChildProcess, spawn } from "child_process";
 import { SearchWindow } from "./windows/searchWindow";
 import { checkPythonHealth } from "./sideCars/python/heath";
 import { RustSidecar } from "./sideCars/rust/process";
+import { PythonSidecar } from "./sideCars/python/process";
 
 let mainWindow: BrowserWindow | null = null;
 let inputWindow: SearchWindow | null = null;
 let trayManager: TrayManager | null = null;
 
-let pythonProcess: ChildProcess | null = null;
+let pythonProcess: PythonSidecar | null = null;
 let rustProcess: RustSidecar | null = null;
 
 let isQuitting = false;
@@ -130,80 +131,13 @@ async function createWindow() {
 }
 
 async function startSidecars() {
-  const backendDir = path.join(dirname, "../../backend");
-  const pythonPath = path.join(backendDir, "venv", "Scripts", "python.exe");
   rustProcess = new RustSidecar(RUST_PORT);
   rustProcess.start();
   await rustProcess.waitUntilReady();
 
-  console.log("🚀 Starting Python FastAPI server...");
-  pythonProcess = spawn(
-    pythonPath,
-    [
-      "-m",
-      "uvicorn",
-      "main:app",
-      "--host",
-      "127.0.0.1",
-      "--port",
-      String(PYTHON_PORT),
-      "--log-level",
-      "info",
-    ],
-    {
-      cwd: backendDir,
-      env: {
-        ...process.env,
-        PYTHON_TOKEN,
-        RUST_URL: `http://127.0.0.1:${RUST_PORT}`,
-        VIRTUAL_ENV: path.join(backendDir, "venv"),
-        PATH: `${path.join(backendDir, "venv", "Scripts")};${process.env.PATH}`,
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    },
-  );
-
-  if (pythonProcess.stdout) {
-    pythonProcess.stdout.on("data", (data) => {
-      console.log(`[Python] ${data.toString().trim()}`);
-    });
-  }
-
-  if (pythonProcess.stderr) {
-    pythonProcess.stderr.on("data", (data) => {
-      console.error(`[Python Error] ${data.toString().trim()}`);
-    });
-  }
-
-  pythonProcess.on("error", (err) => {
-    console.error("❌ Python process error:", err);
-  });
-
-  pythonProcess.on("exit", (code) => {
-    console.log(`Python process exited with code ${code}`);
-  });
-
-  for (let i = 0; i < 30; i++) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, {
-        headers: { "x-token": PYTHON_TOKEN },
-      });
-      if (res.ok) {
-        console.log("✅ Python server ready!");
-        return;
-      }
-    } catch (e) {
-      // Server not ready yet
-    }
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-
-  console.error("❌ Python server failed to start");
-  dialog.showErrorBox(
-    "Server Start Failed",
-    "Python backend did not respond in time",
-  );
+  pythonProcess = new PythonSidecar(PYTHON_PORT);
+  pythonProcess.start();
+  await pythonProcess.waitUntilReady();
 }
 
 // IPC Handlers
@@ -371,7 +305,7 @@ powerMonitor.on("resume", () => {
 app.on("before-quit", () => {
   isQuitting = true;
   console.log("🛑 Shutting down processes...");
-  pythonProcess?.kill();
+  pythonProcess?.stop();
   rustProcess?.stop();
 });
 

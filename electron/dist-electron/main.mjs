@@ -5664,17 +5664,13 @@ powerMonitor.on("resume", () => {
 });
 app.on("before-quit", () => {
 	isQuitting = true;
-	console.log("before-quit");
 	console.log("🛑 Shutting down processes...");
 	pythonProcess?.kill();
 	rustProcess?.stop();
 });
 app.on("will-quit", () => {
-	console.log("will-quit");
 	globalShortcut.unregisterAll();
 });
-app.on("quit", () => console.log("quit"));
-app.on("window-all-closed", () => console.log("window-all-closed"));
 app.whenReady().then(async () => {
 	app.setLoginItemSettings({ openAtLogin: true });
 	if (process.platform === "darwin") app.dock?.hide();

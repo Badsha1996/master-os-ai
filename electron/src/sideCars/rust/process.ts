@@ -2,7 +2,6 @@ import { app, dialog } from "electron";
 import { spawn, ChildProcess } from "child_process";
 import fs from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
 import { dirname } from "../../constants";
 
 export class RustSidecar {
@@ -41,6 +40,7 @@ export class RustSidecar {
   }
 
   start() {
+    console.log("🚀 Starting Rust server...");
     this.validate();
 
     this.process = spawn(this.rustExe, [], {
