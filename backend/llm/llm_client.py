@@ -48,10 +48,10 @@ class LLMClient:
             if health.get("status") == "healthy" and health.get("model_loaded"):
                 self._is_loaded = True
                 self._acceleration_type = health.get("acceleration")
-                logger.info(f"✅ Model already loaded with {self._acceleration_type} acceleration")
+                logger.info(f" Model already loaded with {self._acceleration_type} acceleration")
                 return
         except Exception as e:
-            logger.warning(f"⚠️ Health check failed during init: {e}")
+            logger.warning(f" Health check failed during init: {e}")
         
         if cold_start:
             await self.load_model(gpu_layers=gpu_layers)
@@ -59,7 +59,7 @@ class LLMClient:
     async def load_model(self, gpu_layers: int = 99, retry: bool = True) -> Dict[str, Any]:
         async with self._load_lock:
             try:
-                logger.info(f"🚀 Loading model with {gpu_layers} GPU layers...")
+                logger.info(f" Loading model with {gpu_layers} GPU layers...")
                 
                 resp = await self._http.post(
                     f"{self.rust_url}/load", 
@@ -73,14 +73,14 @@ class LLMClient:
                 self._acceleration_type = data.get("acceleration", "Unknown")
                 self._gpu_layers = data.get("gpu_layers", 0)
                 
-                logger.info(f"✅ Model loaded: {self._acceleration_type} acceleration")
+                logger.info(f" Model loaded: {self._acceleration_type} acceleration")
                 return data
                 
             except Exception as e:
-                logger.error(f"❌ Model load failed: {e}")
+                logger.error(f" Model load failed: {e}")
                 
                 if retry and gpu_layers > 0:
-                    logger.warning("⚠️ Attempting CPU fallback...")
+                    logger.warning(" Attempting CPU fallback...")
                     return await self.load_model(gpu_layers=0, retry=False)
                 
                 raise AgentError(f"Model load failed: {e}")
@@ -91,12 +91,12 @@ class LLMClient:
             if health.get("model_loaded"):
                 return True
             
-            logger.warning("⚠️ Model not loaded, attempting auto-recovery...")
+            logger.warning(" Model not loaded, attempting auto-recovery...")
             await self.load_model(gpu_layers=self._default_gpu_layers)
             return True
             
         except Exception as e:
-            logger.error(f"❌ Auto-recovery failed: {e}")
+            logger.error(f" Auto-recovery failed: {e}")
             return False
 
     async def health_check(self) -> Dict[str, Any]:

@@ -42,19 +42,19 @@ pub async fn handle_load(
     Json(payload): Json<LoadRequest>,
 ) -> Json<LoadResponse> {
     let model_path = PathBuf::from(MODEL_PATH);
-    println!("🚀 Loading request received for: {:?}", model_path);
+    println!(" Loading request received for: {:?}", model_path);
 
     // Try GPU Load
     let (model, accel, layers) = match load_model_strategy(&state.backend, &model_path, payload.gpu_layers) {
         Ok(m) => {
-            println!("✅ GPU Acceleration Active (Layers: {})", payload.gpu_layers);
+            println!(" GPU Acceleration Active (Layers: {})", payload.gpu_layers);
             (m, AccelerationType::GPU, payload.gpu_layers)
         }
         Err(e) => {
-            println!("⚠️ GPU Load Failed: {}. Falling back to CPU...", e);
+            println!(" GPU Load Failed: {}. Falling back to CPU...", e);
             match load_model_strategy(&state.backend, &model_path, 0) {
                 Ok(m) => {
-                    println!("✅ CPU Mode Active");
+                    println!(" CPU Mode Active");
                     (m, AccelerationType::CPU, 0)
                 }
                 Err(e_cpu) => {
@@ -86,7 +86,7 @@ pub async fn handle_unload(State(state): State<Arc<AppState>>) -> Json<serde_jso
     model_state.acceleration = AccelerationType::Unloaded;
     model_state.gpu_layers = 0;
     
-    println!("🔴 Model unloaded");
+    println!(" Model unloaded");
     Json(serde_json::json!({ "status": "unloaded" }))
 }
 

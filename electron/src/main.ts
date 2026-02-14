@@ -5,21 +5,20 @@ import { TrayManager } from "./tray/trayManager";
 import { PYTHON_PORT,  RUST_PORT } from "./constants";
 import { setupSessionSecurity } from "./security/session";
 import { SearchWindow } from "./windows/searchWindow";
-import { checkPythonHealth } from "./sideCars/python/heath";
-import { RustSidecar } from "./sideCars/rust/process";
-import { PythonSidecar } from "./sideCars/python/process";
 import { AppWindow } from "./windows/appWindow";
 import { registerFileHandlers } from "./ipc/files";
 import { registerSearchBoxHandlers } from "./ipc/input";
 import { registerAIHandlers } from "./ipc/ai";
 import { registerTrayHandlers } from "./ipc/tray";
+import { PythonProcess } from "./process/pythonProcess.ts";
+import { RustProcess } from "./process/rustProcess.ts";
 
 let mainWindow: AppWindow | null = null;
 let inputWindow: SearchWindow | null = null;
 let trayManager: TrayManager | null = null;
 
-let pythonProcess: PythonSidecar | null = null;
-let rustProcess: RustSidecar | null = null;
+let pythonProcess: PythonProcess | null = null;
+let rustProcess: RustProcess | null = null;
 
 let isQuitting = false;
 
@@ -66,15 +65,15 @@ async function createWindow() {
   mainWindow = new AppWindow(() => isQuitting);
   await mainWindow.loadUI();
   await startSidecars();
-  await checkPythonHealth();
+  await PythonProcess.checkHealth();
 }
 
 async function startSidecars() {
-  rustProcess = new RustSidecar(RUST_PORT);
+  rustProcess = new RustProcess(RUST_PORT);
   rustProcess.start();
   await rustProcess.waitUntilReady();
 
-  pythonProcess = new PythonSidecar(PYTHON_PORT);
+  pythonProcess = new PythonProcess(PYTHON_PORT);
   pythonProcess.start();
   await pythonProcess.waitUntilReady();
 }

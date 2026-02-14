@@ -1,9 +1,8 @@
 import { ChildProcess, spawn } from "child_process";
-import { dirname, PYTHON_PORT, PYTHON_TOKEN, RUST_PORT } from "../../constants";
+import { dirname, PYTHON_PORT, PYTHON_TOKEN, RUST_PORT } from "../constants";
 import path from "path";
 import { app, dialog } from "electron";
-import { checkPythonHealth } from "./heath";
-export class PythonSidecar {
+export class PythonProcess {
   private process: ChildProcess | null = null;
   private readonly pythonPath: string;
   private readonly backendDir: string;
@@ -17,8 +16,24 @@ export class PythonSidecar {
     );
     this.pythonPath = pythonPath;
   }
+  static async checkHealth(): Promise<boolean> {
+    try {
+      const res = await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, {
+        headers: { "x-token": PYTHON_TOKEN },
+      });
+
+      if (res.ok) {
+        console.log(" Python sidecar healthy");
+        return true;
+      }
+    } catch (error) {
+      console.error(" Python sidecar health check failed:", error);
+    }
+
+    return false;
+  }
   start() {
-    console.log("🚀 Starting Python FastAPI server...");
+    console.log(" Starting Python FastAPI server...");
     this.process = spawn(
       this.pythonPath,
       [
@@ -55,13 +70,13 @@ export class PythonSidecar {
     }
   }
   async waitUntilReady(retries = 30, delayMs = 1000): Promise<void> {
-    console.log("⏳ Waiting for Python server...");
+    console.log(" Waiting for Python server...");
 
     for (let i = 0; i < retries; i++) {
       try {
-        const healthy = await checkPythonHealth()
+        const healthy = await PythonProcess.checkHealth();
         if (healthy) {
-          console.log("✅ Python server ready!");
+          console.log(" Python server ready!");
           return;
         }
       } catch (err) {
@@ -92,7 +107,7 @@ export class PythonSidecar {
     if (!this.process) return;
 
     this.process.on("error", (err) => {
-      console.error("❌ Python process error:", err);
+      console.error(" Python process error:", err);
     });
 
     this.process.on("exit", (code) => {
@@ -100,8 +115,9 @@ export class PythonSidecar {
     });
   }
   private fatalError(title: string, message: string): never {
-    console.error(`❌ ${title}`);
+    console.error(` ${title}`);
     dialog.showErrorBox(title, message);
     throw new Error(message);
   }
+  
 }

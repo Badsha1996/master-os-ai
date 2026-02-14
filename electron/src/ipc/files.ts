@@ -19,7 +19,7 @@ export function registerFileHandlers() {
       if (!res.ok) throw new Error(`Backend error: ${res.statusText}`);
       return await res.json();
     } catch (error: any) {
-      console.error("❌ Stream setup failed:", error.message);
+      console.error(" Stream setup failed:", error.message);
       return { error: error.message };
     }
   });

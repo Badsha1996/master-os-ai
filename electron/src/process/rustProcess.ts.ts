@@ -2,9 +2,9 @@ import { app, dialog } from "electron";
 import { spawn, ChildProcess } from "child_process";
 import fs from "fs";
 import path from "path";
-import { dirname } from "../../constants";
+import { dirname } from "../constants";
 
-export class RustSidecar {
+export class RustProcess {
   private process: ChildProcess | null = null;
 
   private readonly rustDir: string;
@@ -40,7 +40,7 @@ export class RustSidecar {
   }
 
   start() {
-    console.log("🚀 Starting Rust server...");
+    console.log(" Starting Rust server...");
     this.validate();
 
     this.process = spawn(this.rustExe, [], {
@@ -59,13 +59,13 @@ export class RustSidecar {
   }
 
   async waitUntilReady(retries = 30, delayMs = 1000): Promise<void> {
-    console.log("⏳ Waiting for Rust server...");
+    console.log(" Waiting for Rust server...");
 
     for (let i = 0; i < retries; i++) {
       try {
         const res = await fetch(`http://127.0.0.1:${this.port}/health`);
         if (res.ok) {
-          console.log("✅ Rust server ready!");
+          console.log(" Rust server ready!");
           return;
         }
       } catch {
@@ -102,7 +102,7 @@ export class RustSidecar {
     if (!this.process) return;
 
     this.process.on("error", (err) => {
-      console.error("❌ Rust process error:", err);
+      console.error(" Rust process error:", err);
     });
 
     this.process.on("exit", (code) => {
@@ -111,7 +111,7 @@ export class RustSidecar {
   }
 
   private fatalError(title: string, message: string): never {
-    console.error(`❌ ${title}`);
+    console.error(` ${title}`);
     dialog.showErrorBox(title, message);
     app.quit();
     throw new Error(message);

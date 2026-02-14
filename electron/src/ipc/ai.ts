@@ -87,13 +87,13 @@ export function registerAIHandlers() {
     });
 
     response.body.on("error", (err: Error) => {
-      console.error("❌ Stream error:", err);
+      console.error(" Stream error:", err);
       event.sender.send("ai:stream-error", { error: err.message });
     });
 
     return { success: true };
   } catch (error: any) {
-    console.error("❌ Stream setup failed:", error.message);
+    console.error(" Stream setup failed:", error.message);
     event.sender.send("ai:stream-error", { error: error.message });
     return { error: error.message };
   }

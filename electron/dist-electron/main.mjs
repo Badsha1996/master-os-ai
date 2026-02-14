@@ -3,7 +3,6 @@ import { BrowserWindow, Menu, Tray, app, dialog, globalShortcut, ipcMain, native
 import path from "path";
 import { fileURLToPath } from "url";
 import { randomBytes } from "crypto";
-import { spawn } from "child_process";
 import fs from "fs";
 import http from "node:http";
 import https from "node:https";
@@ -14,6 +13,7 @@ import { deprecate, promisify, types } from "node:util";
 import { format } from "node:url";
 import { isIP } from "node:net";
 import { createReadStream, promises } from "node:fs";
+import { spawn } from "child_process";
 
 //#region rolldown:runtime
 var __create = Object.create;
@@ -87,9 +87,9 @@ var TrayManager = class {
 //#region src/constants.ts
 const filename = fileURLToPath(import.meta.url);
 const dirname = path.dirname(filename);
-const PYTHON_TOKEN = "54321";
-const PYTHON_PORT = 8e3;
-const RUST_PORT = 5005;
+const PYTHON_TOKEN = process.env.PYTHON_TOKEN || "54321";
+const PYTHON_PORT = parseInt(process.env.PYTHON_PORT || "8000");
+const RUST_PORT = parseInt(process.env.RUST_PORT || "5005");
 const CSP_NONCE = randomBytes(16).toString("base64");
 
 //#endregion
@@ -182,190 +182,6 @@ var SearchWindow = class {
 };
 
 //#endregion
-//#region src/sideCars/python/heath.ts
-async function checkPythonHealth() {
-	try {
-		if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, { headers: { "x-token": PYTHON_TOKEN } })).ok) {
-			console.log("✅ Python sidecar healthy");
-			return true;
-		}
-	} catch (error) {
-		console.error("❌ Python sidecar health check failed:", error);
-	}
-	return false;
-}
-
-//#endregion
-//#region src/sideCars/rust/process.ts
-var RustSidecar = class {
-	process = null;
-	rustDir;
-	rustExe;
-	modelPath;
-	port;
-	constructor(port) {
-		this.port = port;
-		this.rustDir = path.join(dirname, "../../rust");
-		this.rustExe = path.join(this.rustDir, "target/debug/rust.exe");
-		this.modelPath = path.join(this.rustDir, "models", "mistral-7b-instruct-v0.2.Q4_K_S.gguf");
-	}
-	validate() {
-		if (!fs.existsSync(this.rustExe)) this.fatalError("Rust Sidecar Missing", `rust.exe not found at:\n${this.rustExe}\n\nBuild it with: cargo build`);
-		if (!fs.existsSync(this.modelPath)) this.fatalError("Model Missing", `Model not found at:\n${this.modelPath}\n\nPlease download the model first.`);
-	}
-	start() {
-		console.log("🚀 Starting Rust server...");
-		this.validate();
-		this.process = spawn(this.rustExe, [], {
-			cwd: this.rustDir,
-			stdio: [
-				"ignore",
-				"pipe",
-				"pipe"
-			],
-			env: {
-				...process.env,
-				PORT: String(this.port),
-				RUST_LOG: "info"
-			},
-			windowsHide: true
-		});
-		this.attachLogs();
-		this.attachLifecycleHandlers();
-	}
-	async waitUntilReady(retries = 30, delayMs = 1e3) {
-		console.log("⏳ Waiting for Rust server...");
-		for (let i$1 = 0; i$1 < retries; i$1++) {
-			try {
-				if ((await fetch(`http://127.0.0.1:${this.port}/health`)).ok) {
-					console.log("✅ Rust server ready!");
-					return;
-				}
-			} catch {}
-			await new Promise((r$1) => setTimeout(r$1, delayMs));
-		}
-		throw new Error("Rust sidecar failed to become ready");
-	}
-	stop() {
-		if (this.process && !this.process.killed) {
-			this.process.kill();
-			this.process = null;
-		}
-	}
-	attachLogs() {
-		if (!this.process) return;
-		const { stdout, stderr } = this.process;
-		stdout?.on("data", (data) => {
-			console.log(`[Rust] ${data.toString().trim()}`);
-		});
-		stderr?.on("data", (data) => {
-			console.error(`[Rust Error] ${data.toString().trim()}`);
-		});
-	}
-	attachLifecycleHandlers() {
-		if (!this.process) return;
-		this.process.on("error", (err) => {
-			console.error("❌ Rust process error:", err);
-		});
-		this.process.on("exit", (code) => {
-			console.log(`Rust process exited with code ${code}`);
-		});
-	}
-	fatalError(title, message) {
-		console.error(`❌ ${title}`);
-		dialog.showErrorBox(title, message);
-		app.quit();
-		throw new Error(message);
-	}
-};
-
-//#endregion
-//#region src/sideCars/python/process.ts
-var PythonSidecar = class {
-	process = null;
-	pythonPath;
-	backendDir;
-	constructor(port) {
-		this.backendDir = path.join(dirname, "../../backend");
-		this.pythonPath = path.join(this.backendDir, "venv", "Scripts", "python.exe");
-	}
-	start() {
-		console.log("🚀 Starting Python FastAPI server...");
-		this.process = spawn(this.pythonPath, [
-			"-m",
-			"uvicorn",
-			"main:app",
-			"--host",
-			"127.0.0.1",
-			"--port",
-			String(PYTHON_PORT),
-			"--log-level",
-			"info"
-		], {
-			cwd: this.backendDir,
-			env: {
-				...process.env,
-				PYTHON_TOKEN,
-				RUST_URL: `http://127.0.0.1:${RUST_PORT}`,
-				VIRTUAL_ENV: path.join(this.backendDir, "venv"),
-				PATH: `${path.join(this.backendDir, "venv", "Scripts")};${process.env.PATH}`
-			},
-			stdio: [
-				"ignore",
-				"pipe",
-				"pipe"
-			],
-			windowsHide: true
-		});
-		this.attachLogs();
-		this.attachLifecycleHandlers();
-	}
-	stop() {
-		if (this.process && !this.process.killed) {
-			this.process.kill();
-			this.process = null;
-		}
-	}
-	async waitUntilReady(retries = 30, delayMs = 1e3) {
-		console.log("⏳ Waiting for Python server...");
-		for (let i$1 = 0; i$1 < retries; i$1++) {
-			try {
-				if (await checkPythonHealth()) {
-					console.log("✅ Python server ready!");
-					return;
-				}
-			} catch (err) {}
-			await new Promise((r$1) => setTimeout(r$1, delayMs));
-		}
-		this.fatalError("Python server failed to start", "Python backend did not respond in time");
-	}
-	attachLogs() {
-		if (!this.process) return;
-		const { stdout, stderr } = this.process;
-		stdout?.on("data", (data) => {
-			console.log(`[Python] ${data.toString().trim()}`);
-		});
-		stderr?.on("data", (data) => {
-			console.error(`[Python Error] ${data.toString().trim()}`);
-		});
-	}
-	attachLifecycleHandlers() {
-		if (!this.process) return;
-		this.process.on("error", (err) => {
-			console.error("❌ Python process error:", err);
-		});
-		this.process.on("exit", (code) => {
-			console.log(`Python process exited with code ${code}`);
-		});
-	}
-	fatalError(title, message) {
-		console.error(`❌ ${title}`);
-		dialog.showErrorBox(title, message);
-		throw new Error(message);
-	}
-};
-
-//#endregion
 //#region src/windows/appWindow.ts
 var AppWindow = class {
 	window = null;
@@ -453,7 +269,7 @@ function registerFileHandlers() {
 			if (!res.ok) throw new Error(`Backend error: ${res.statusText}`);
 			return await res.json();
 		} catch (error) {
-			console.error("❌ Stream setup failed:", error.message);
+			console.error(" Stream setup failed:", error.message);
 			return { error: error.message };
 		}
 	});
@@ -5690,12 +5506,12 @@ function registerAIHandlers() {
 				event.sender.send("ai:stream-end");
 			});
 			response.body.on("error", (err) => {
-				console.error("❌ Stream error:", err);
+				console.error(" Stream error:", err);
 				event.sender.send("ai:stream-error", { error: err.message });
 			});
 			return { success: true };
 		} catch (error) {
-			console.error("❌ Stream setup failed:", error.message);
+			console.error(" Stream setup failed:", error.message);
 			event.sender.send("ai:stream-error", { error: error.message });
 			return { error: error.message };
 		}
@@ -5712,6 +5528,187 @@ function registerTrayHandlers(ctx) {
 		app.setBadgeCount(count);
 	});
 }
+
+//#endregion
+//#region src/process/pythonProcess.ts
+var PythonProcess = class PythonProcess {
+	process = null;
+	pythonPath;
+	backendDir;
+	constructor(port) {
+		this.backendDir = path.join(dirname, "../../backend");
+		this.pythonPath = path.join(this.backendDir, "venv", "Scripts", "python.exe");
+	}
+	static async checkHealth() {
+		try {
+			if ((await fetch(`http://127.0.0.1:${PYTHON_PORT}/api/health`, { headers: { "x-token": PYTHON_TOKEN } })).ok) {
+				console.log(" Python sidecar healthy");
+				return true;
+			}
+		} catch (error) {
+			console.error(" Python sidecar health check failed:", error);
+		}
+		return false;
+	}
+	start() {
+		console.log(" Starting Python FastAPI server...");
+		this.process = spawn(this.pythonPath, [
+			"-m",
+			"uvicorn",
+			"main:app",
+			"--host",
+			"127.0.0.1",
+			"--port",
+			String(PYTHON_PORT),
+			"--log-level",
+			"info"
+		], {
+			cwd: this.backendDir,
+			env: {
+				...process.env,
+				PYTHON_TOKEN,
+				RUST_URL: `http://127.0.0.1:${RUST_PORT}`,
+				VIRTUAL_ENV: path.join(this.backendDir, "venv"),
+				PATH: `${path.join(this.backendDir, "venv", "Scripts")};${process.env.PATH}`
+			},
+			stdio: [
+				"ignore",
+				"pipe",
+				"pipe"
+			],
+			windowsHide: true
+		});
+		this.attachLogs();
+		this.attachLifecycleHandlers();
+	}
+	stop() {
+		if (this.process && !this.process.killed) {
+			this.process.kill();
+			this.process = null;
+		}
+	}
+	async waitUntilReady(retries = 30, delayMs = 1e3) {
+		console.log(" Waiting for Python server...");
+		for (let i$1 = 0; i$1 < retries; i$1++) {
+			try {
+				if (await PythonProcess.checkHealth()) {
+					console.log(" Python server ready!");
+					return;
+				}
+			} catch (err) {}
+			await new Promise((r$1) => setTimeout(r$1, delayMs));
+		}
+		this.fatalError("Python server failed to start", "Python backend did not respond in time");
+	}
+	attachLogs() {
+		if (!this.process) return;
+		const { stdout, stderr } = this.process;
+		stdout?.on("data", (data) => {
+			console.log(`[Python] ${data.toString().trim()}`);
+		});
+		stderr?.on("data", (data) => {
+			console.error(`[Python Error] ${data.toString().trim()}`);
+		});
+	}
+	attachLifecycleHandlers() {
+		if (!this.process) return;
+		this.process.on("error", (err) => {
+			console.error(" Python process error:", err);
+		});
+		this.process.on("exit", (code) => {
+			console.log(`Python process exited with code ${code}`);
+		});
+	}
+	fatalError(title, message) {
+		console.error(` ${title}`);
+		dialog.showErrorBox(title, message);
+		throw new Error(message);
+	}
+};
+
+//#endregion
+//#region src/process/rustProcess.ts.ts
+var RustProcess = class {
+	process = null;
+	rustDir;
+	rustExe;
+	modelPath;
+	port;
+	constructor(port) {
+		this.port = port;
+		this.rustDir = path.join(dirname, "../../rust");
+		this.rustExe = path.join(this.rustDir, "target/debug/rust.exe");
+		this.modelPath = path.join(this.rustDir, "models", "mistral-7b-instruct-v0.2.Q4_K_S.gguf");
+	}
+	validate() {
+		if (!fs.existsSync(this.rustExe)) this.fatalError("Rust Sidecar Missing", `rust.exe not found at:\n${this.rustExe}\n\nBuild it with: cargo build`);
+		if (!fs.existsSync(this.modelPath)) this.fatalError("Model Missing", `Model not found at:\n${this.modelPath}\n\nPlease download the model first.`);
+	}
+	start() {
+		console.log(" Starting Rust server...");
+		this.validate();
+		this.process = spawn(this.rustExe, [], {
+			cwd: this.rustDir,
+			stdio: [
+				"ignore",
+				"pipe",
+				"pipe"
+			],
+			env: {
+				...process.env,
+				PORT: String(this.port),
+				RUST_LOG: "info"
+			},
+			windowsHide: true
+		});
+		this.attachLogs();
+		this.attachLifecycleHandlers();
+	}
+	async waitUntilReady(retries = 30, delayMs = 1e3) {
+		console.log(" Waiting for Rust server...");
+		for (let i$1 = 0; i$1 < retries; i$1++) {
+			try {
+				if ((await fetch(`http://127.0.0.1:${this.port}/health`)).ok) {
+					console.log(" Rust server ready!");
+					return;
+				}
+			} catch {}
+			await new Promise((r$1) => setTimeout(r$1, delayMs));
+		}
+		throw new Error("Rust sidecar failed to become ready");
+	}
+	stop() {
+		if (this.process && !this.process.killed) {
+			this.process.kill();
+			this.process = null;
+		}
+	}
+	attachLogs() {
+		if (!this.process) return;
+		const { stdout, stderr } = this.process;
+		stdout?.on("data", (data) => {
+			console.log(`[Rust] ${data.toString().trim()}`);
+		});
+		stderr?.on("data", (data) => {
+			console.error(`[Rust Error] ${data.toString().trim()}`);
+		});
+	}
+	attachLifecycleHandlers() {
+		if (!this.process) return;
+		this.process.on("error", (err) => {
+			console.error(" Rust process error:", err);
+		});
+		this.process.on("exit", (code) => {
+			console.log(`Rust process exited with code ${code}`);
+		});
+	}
+	fatalError(title, message) {
+		console.error(` ${title}`);
+		dialog.showErrorBox(title, message);
+		app.quit();
+		throw new Error(message);
+	}
+};
 
 //#endregion
 //#region src/main.ts
@@ -5747,13 +5744,13 @@ async function createWindow() {
 	mainWindow = new AppWindow(() => isQuitting);
 	await mainWindow.loadUI();
 	await startSidecars();
-	await checkPythonHealth();
+	await PythonProcess.checkHealth();
 }
 async function startSidecars() {
-	rustProcess = new RustSidecar(RUST_PORT);
+	rustProcess = new RustProcess(RUST_PORT);
 	rustProcess.start();
 	await rustProcess.waitUntilReady();
-	pythonProcess = new PythonSidecar(PYTHON_PORT);
+	pythonProcess = new PythonProcess(PYTHON_PORT);
 	pythonProcess.start();
 	await pythonProcess.waitUntilReady();
 }
