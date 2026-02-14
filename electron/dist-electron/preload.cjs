@@ -12,8 +12,6 @@ const allowedOnChannels = [
 const allowedInvokeChannels = [
 	"ai:request",
 	"ai:request-stream",
-	"ai:cancel",
-	"dialog:openFolder",
 	"file:search"
 ];
 electron.contextBridge.exposeInMainWorld("electronAPI", {
@@ -42,10 +40,7 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
 			method: "GET"
 		})
 	},
-	files: {
-		openFolder: () => electron.ipcRenderer.invoke("dialog:openFolder"),
-		openItem: (path) => electron.ipcRenderer.invoke("open:path", path)
-	},
+	files: { openItem: (path) => electron.ipcRenderer.invoke("open:path", path) },
 	searchBox: {
 		search: (query) => {
 			return electron.ipcRenderer.invoke("file:search", {

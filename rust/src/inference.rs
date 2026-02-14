@@ -51,7 +51,7 @@ pub fn run_inference(
 
     let mut ctx = match model.new_context(backend, ctx_params) {
         Ok(c) => {
-            println!("✅ Context created (n_ctx={}, n_batch={})", n_ctx, n_batch);
+            println!(" Context created (n_ctx={}, n_batch={})", n_ctx, n_batch);
             c
         }
         Err(e) => {
@@ -64,7 +64,7 @@ pub fn run_inference(
     // 3. Tokenize with validation
     let tokens = match model.str_to_token(&request.prompt, AddBos::Always) {
         Ok(t) => {
-            println!("✅ Tokenized: {} tokens", t.len());
+            println!(" Tokenized: {} tokens", t.len());
             
             if t.is_empty() {
                 let err_msg = "Tokenization produced no tokens";
@@ -126,7 +126,7 @@ pub fn run_inference(
         println!("   Processed {}/{} tokens", n_processed, tokens.len());
     }
 
-    println!("✅ Prompt processed successfully");
+    println!(" Prompt processed successfully");
 
     // 5. Generate tokens with optimized sampling
     let safe_temp = request.temperature.clamp(0.1, 2.0);
@@ -142,30 +142,30 @@ pub fn run_inference(
         LlamaSampler::dist(42),
     ]);
 
-    println!("🔄 Generating tokens...");
+    println!(" Generating tokens...");
 
     loop {
         if cancel_token.is_cancelled() {
-            println!("⚠️ Generation cancelled by user");
+            println!(" Generation cancelled by user");
             break;
         }
 
         if n_decoded >= request.max_tokens {
-            println!("✅ Max tokens reached: {}", n_decoded);
+            println!(" Max tokens reached: {}", n_decoded);
             break;
         }
 
         let new_token = sampler.sample(&ctx, batch.n_tokens() - 1);
 
         if new_token == model.token_eos() {
-            println!("✅ EOS token reached");
+            println!(" EOS token reached");
             break;
         }
 
         let piece = match model.token_to_str_with_size(new_token, 32, Special::Tokenize) {
             Ok(s) => s,
             Err(e) => {
-                println!("⚠️ Token decode error: {}", e);
+                println!(" Token decode error: {}", e);
                 String::new()
             }
         };
@@ -183,7 +183,7 @@ pub fn run_inference(
             if !request.stop_sequences.is_empty() {
                 for stop_seq in &request.stop_sequences {
                     if accumulated.ends_with(stop_seq) { 
-                        println!("✅ Stop sequence detected: '{}'", stop_seq);
+                        println!(" Stop sequence detected: '{}'", stop_seq);
                         return Ok(n_decoded);
                     }
                 }
@@ -193,14 +193,14 @@ pub fn run_inference(
         batch = LlamaBatch::new(n_batch as usize, 1);
         
         if let Err(e) = batch.add(new_token, n_cur, &[0], true) {
-            println!("❌ Failed to add token to batch: {}", e);
+            println!(" Failed to add token to batch: {}", e);
             break;
         }
         
         n_cur += 1;
 
         if let Err(e) = ctx.decode(&mut batch) {
-            println!("❌ Decode failed: {}", e);
+            println!(" Decode failed: {}", e);
             let _ = tx.send(Err(anyhow!("Decode error: {}", e)));
             break;
         }
@@ -209,6 +209,6 @@ pub fn run_inference(
         }
     }
 
-    println!("✅ Generation complete: {} tokens", n_decoded);
+    println!(" Generation complete: {} tokens", n_decoded);
     Ok(n_decoded)
 }

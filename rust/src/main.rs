@@ -18,16 +18,16 @@ use tokio::sync::RwLock;
 async fn main() -> Result<()> {
     // 1. Logging
     tracing_subscriber::fmt::init();
-    println!("🚀 Master-OS AI Core Initializing...");
+    println!(" Master-OS AI Core Initializing...");
 
     // 2. Initialize Backend (Global) - CRITICAL FIX
     let backend = match LlamaBackend::init() {
         Ok(b) => {
-            println!("✅ LlamaBackend initialized successfully");
+            println!(" LlamaBackend initialized successfully");
             Arc::new(b)
         }
         Err(e) => {
-            eprintln!("❌ FATAL: Failed to initialize LlamaBackend: {}", e);
+            eprintln!(" FATAL: Failed to initialize LlamaBackend: {}", e);
             eprintln!("   Make sure CUDA/Metal/Vulkan drivers are installed");
             std::process::exit(1);
         }

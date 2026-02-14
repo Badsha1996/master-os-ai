@@ -10,7 +10,7 @@ pub fn load_model_strategy(
     path: &PathBuf,
     gpu_layers: u32,
 ) -> Result<LlamaModel> {
-    println!("🔄 Attempting to load model from: {:?}", path);
+    println!(" Attempting to load model from: {:?}", path);
     println!("   GPU Layers requested: {}", gpu_layers);
     
     // Verify file exists
@@ -28,11 +28,11 @@ pub fn load_model_strategy(
     
     match LlamaModel::load_from_file(backend, path, &params) {
         Ok(model) => {
-            println!("✅ Model loaded successfully!");
+            println!(" Model loaded successfully!");
             Ok(model)
         }
         Err(e) => {
-            eprintln!("❌ Model load failed: {}", e);
+            eprintln!(" Model load failed: {}", e);
             Err(anyhow::anyhow!("Failed to load model from {:?}: {}", path, e))
         }
     }

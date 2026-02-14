@@ -12,8 +12,6 @@ const allowedOnChannels = [
 const allowedInvokeChannels = [
   "ai:request",
   "ai:request-stream",
-  "ai:cancel",
-  "dialog:openFolder",
   "file:search",
 ] as const;
 
@@ -37,7 +35,6 @@ export interface ElectronAPI {
 
   // File System API
   files: {
-    openFolder: () => Promise<string[]>;
     openItem: (path: string) => Promise<void>;
   };
   searchBox: {
@@ -82,7 +79,6 @@ const electronAPI: ElectronAPI = {
 
   // File System API
   files: {
-    openFolder: () => ipcRenderer.invoke("dialog:openFolder"),
     openItem: (path: string) => ipcRenderer.invoke("open:path", path),
   },
   searchBox: {
