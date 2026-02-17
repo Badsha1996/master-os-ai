@@ -1,8 +1,6 @@
-import { app, shell, ipcMain, globalShortcut, powerMonitor } from "electron";
-import fs from "fs";
-import fetch from "node-fetch";
+import { app, globalShortcut, powerMonitor } from "electron";
 import { TrayManager } from "./tray/trayManager";
-import { PYTHON_PORT,  RUST_PORT } from "./constants";
+import { PYTHON_PORT, RUST_PORT } from "./constants";
 import { setupSessionSecurity } from "./security/session";
 import { SearchWindow } from "./windows/searchWindow";
 import { AppWindow } from "./windows/appWindow";
@@ -12,6 +10,7 @@ import { registerAIHandlers } from "./ipc/ai";
 import { registerTrayHandlers } from "./ipc/tray";
 import { PythonProcess } from "./process/pythonProcess.ts";
 import { RustProcess } from "./process/rustProcess.ts";
+import { registerLogHandlers } from "./ipc/log.ts";
 
 let mainWindow: AppWindow | null = null;
 let inputWindow: SearchWindow | null = null;
@@ -23,10 +22,11 @@ let rustProcess: RustProcess | null = null;
 let isQuitting = false;
 
 async function createInputWindow() {
-  if (inputWindow) return;
+  if (inputWindow && !inputWindow.isDestroyed()) return;
+
 
   try {
-    inputWindow = new SearchWindow();
+    inputWindow = new SearchWindow(() => (inputWindow = null));
 
     await inputWindow.loadUI();
   } catch (err) {
@@ -42,7 +42,7 @@ async function createInputWindow() {
 }
 
 async function toggleInputWindow() {
-  if (!inputWindow) {
+  if (!inputWindow || inputWindow?.isDestroyed()) {
     await createInputWindow();
   }
   inputWindow?.toggle();
@@ -79,18 +79,23 @@ async function startSidecars() {
 }
 
 // IPC Handlers
+registerLogHandlers();
 registerAIHandlers();
 registerFileHandlers();
 registerSearchBoxHandlers({ getInputWindow: () => inputWindow });
 registerTrayHandlers({ getTrayManager: () => trayManager });
-// powerMonitor.on("resume", () => {
-//   mainWindow?.webContents.send("system:resume");
-// });
+powerMonitor.on("resume", () => {
+  const win = mainWindow?.getWindow();
+
+  if (win && !win.isDestroyed()) {
+    win.webContents.send("system:resume");
+  }
+});
 
 // Cleanup
 app.on("before-quit", () => {
   isQuitting = true;
-  console.log("🛑 Shutting down processes...");
+  console.log(" Shutting down processes...");
   pythonProcess?.stop();
   rustProcess?.stop();
 });

@@ -7,7 +7,9 @@ const allowedOnChannels = [
 	"ai:stream-data",
 	"ai:stream-end",
 	"ai:stream-error",
-	"ui:open-setting"
+	"ui:open-setting",
+	"window:blur",
+	"window:focus"
 ];
 const allowedInvokeChannels = [
 	"ai:request",
@@ -50,6 +52,23 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
 			});
 		},
 		resize: (height) => electron.ipcRenderer.invoke("input:resize-window", height)
+	},
+	log: {
+		info: (message, source) => electron.ipcRenderer.invoke("ui:log", {
+			level: "info",
+			message,
+			source
+		}),
+		warn: (message, source) => electron.ipcRenderer.invoke("ui:log", {
+			level: "warn",
+			message,
+			source
+		}),
+		error: (message, source) => electron.ipcRenderer.invoke("ui:log", {
+			level: "error",
+			message,
+			source
+		})
 	},
 	removeAllStreamListeners: () => {
 		electron.ipcRenderer.removeAllListeners("ai:stream-data");

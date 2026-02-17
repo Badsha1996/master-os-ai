@@ -5,7 +5,7 @@ import { dirname } from "../constants";
 export class SearchWindow {
   private window: BrowserWindow | null = null;
 
-  constructor() {
+  constructor(private onDestroy?: () => void) {
     this.createWindow();
   }
 
@@ -36,8 +36,18 @@ export class SearchWindow {
   }
 
   private attachEvents() {
-    if (!this.window) return;
+    if (!this.window || this.window.isDestroyed()) return;
+    this.window.on("blur", () => {
+      if (!this.window || this.window.isDestroyed()) return;
+      this.window.setMinimumSize(600, 60);
+      this.setSize(600, 60);
+      this.window.webContents.send("window:blur");
+    });
 
+    this.window.on("focus", () => {
+      if (!this.window || this.window.isDestroyed()) return;
+      this.window.webContents.send("window:focus");
+    });
     this.window.on("close", (e) => {
       e.preventDefault();
       this.window?.hide();
@@ -45,7 +55,7 @@ export class SearchWindow {
   }
 
   async loadUI() {
-    if (!this.window) return;
+    if (!this.window || this.window.isDestroyed()) return;
 
     try {
       if (process.env.NODE_ENV === "development") {
@@ -67,17 +77,18 @@ export class SearchWindow {
   }
 
   show() {
-    if (!this.window) return;
+    if (!this.window || this.window.isDestroyed()) return;
     this.window.show();
     this.window.focus();
   }
 
   hide() {
+    if (!this.window || this.window.isDestroyed()) return;
     this.window?.hide();
   }
 
   toggle() {
-    if (!this.window) return;
+    if (!this.window || this.window.isDestroyed()) return;
 
     if (this.window.isVisible()) {
       this.hide();
@@ -86,12 +97,19 @@ export class SearchWindow {
     }
   }
   setSize(width: number, height: number) {
+    if (!this.window || this.window.isDestroyed()) return;
+    this.window.setMinimumSize(width, height);
     this.window?.setSize(width, height, true);
   }
+
   destroy() {
     if (this.window && !this.window.isDestroyed()) {
       this.window.destroy();
     }
     this.window = null;
+    this.onDestroy?.();
+  }
+  isDestroyed() {
+    return this.window?.isDestroyed() ?? true;
   }
 }

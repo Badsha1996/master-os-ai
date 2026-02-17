@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { BrowserWindow, Menu, Tray, app, dialog, globalShortcut, ipcMain, nativeImage, screen, session, shell } from "electron";
+import { BrowserWindow, Menu, Tray, app, dialog, globalShortcut, ipcMain, nativeImage, powerMonitor, screen, session, shell } from "electron";
 import path from "path";
 import { fileURLToPath } from "url";
 import { randomBytes } from "crypto";
@@ -114,7 +114,8 @@ async function setupSessionSecurity() {
 //#region src/windows/searchWindow.ts
 var SearchWindow = class {
 	window = null;
-	constructor() {
+	constructor(onDestroy) {
+		this.onDestroy = onDestroy;
 		this.createWindow();
 	}
 	createWindow() {
@@ -141,14 +142,24 @@ var SearchWindow = class {
 		this.attachEvents();
 	}
 	attachEvents() {
-		if (!this.window) return;
+		if (!this.window || this.window.isDestroyed()) return;
+		this.window.on("blur", () => {
+			if (!this.window || this.window.isDestroyed()) return;
+			this.window.setMinimumSize(600, 60);
+			this.setSize(600, 60);
+			this.window.webContents.send("window:blur");
+		});
+		this.window.on("focus", () => {
+			if (!this.window || this.window.isDestroyed()) return;
+			this.window.webContents.send("window:focus");
+		});
 		this.window.on("close", (e$1) => {
 			e$1.preventDefault();
 			this.window?.hide();
 		});
 	}
 	async loadUI() {
-		if (!this.window) return;
+		if (!this.window || this.window.isDestroyed()) return;
 		try {
 			if (process.env.NODE_ENV === "development") await this.window.loadURL("http://localhost:5173/command");
 			else if (process.env.VITE_DEV_SERVER_URL) await this.window.loadURL(`${process.env.VITE_DEV_SERVER_URL}/command`);
@@ -160,24 +171,31 @@ var SearchWindow = class {
 		}
 	}
 	show() {
-		if (!this.window) return;
+		if (!this.window || this.window.isDestroyed()) return;
 		this.window.show();
 		this.window.focus();
 	}
 	hide() {
+		if (!this.window || this.window.isDestroyed()) return;
 		this.window?.hide();
 	}
 	toggle() {
-		if (!this.window) return;
+		if (!this.window || this.window.isDestroyed()) return;
 		if (this.window.isVisible()) this.hide();
 		else this.show();
 	}
 	setSize(width, height) {
+		if (!this.window || this.window.isDestroyed()) return;
+		this.window.setMinimumSize(width, height);
 		this.window?.setSize(width, height, true);
 	}
 	destroy() {
 		if (this.window && !this.window.isDestroyed()) this.window.destroy();
 		this.window = null;
+		this.onDestroy?.();
+	}
+	isDestroyed() {
+		return this.window?.isDestroyed() ?? true;
 	}
 };
 
@@ -5627,7 +5645,7 @@ var PythonProcess = class PythonProcess {
 };
 
 //#endregion
-//#region src/process/rustProcess.ts.ts
+//#region src/process/rustProcess.ts
 var RustProcess = class {
 	process = null;
 	rustDir;
@@ -5711,6 +5729,43 @@ var RustProcess = class {
 };
 
 //#endregion
+//#region src/ipc/log.ts
+const COLORS = {
+	reset: "\x1B[0m",
+	blue: "\x1B[34m",
+	yellow: "\x1B[33m",
+	red: "\x1B[31m"
+};
+function registerLogHandlers() {
+	ipcMain.handle("ui:log", (_event, payload) => {
+		const { level, message, source } = payload;
+		const basePrefix = source ? `[UI:${source}]` : "[UI]";
+		let color = COLORS.blue;
+		switch (level) {
+			case "warn":
+				color = COLORS.yellow;
+				break;
+			case "error":
+				color = COLORS.red;
+				break;
+			case "info":
+			default: color = COLORS.blue;
+		}
+		const coloredPrefix = `${color}${basePrefix}${COLORS.reset}`;
+		switch (level) {
+			case "warn":
+				console.warn(coloredPrefix, message);
+				break;
+			case "error":
+				console.error(coloredPrefix, message);
+				break;
+			default: console.log(coloredPrefix, message);
+		}
+		return { success: true };
+	});
+}
+
+//#endregion
 //#region src/main.ts
 let mainWindow = null;
 let inputWindow = null;
@@ -5719,9 +5774,9 @@ let pythonProcess = null;
 let rustProcess = null;
 let isQuitting = false;
 async function createInputWindow() {
-	if (inputWindow) return;
+	if (inputWindow && !inputWindow.isDestroyed()) return;
 	try {
-		inputWindow = new SearchWindow();
+		inputWindow = new SearchWindow(() => inputWindow = null);
 		await inputWindow.loadUI();
 	} catch (err) {
 		console.error("Failed to create input window:", err);
@@ -5731,7 +5786,7 @@ async function createInputWindow() {
 	}
 }
 async function toggleInputWindow() {
-	if (!inputWindow) await createInputWindow();
+	if (!inputWindow || inputWindow?.isDestroyed()) await createInputWindow();
 	inputWindow?.toggle();
 	inputWindow?.setSize(600, 60);
 }
@@ -5754,13 +5809,18 @@ async function startSidecars() {
 	pythonProcess.start();
 	await pythonProcess.waitUntilReady();
 }
+registerLogHandlers();
 registerAIHandlers();
 registerFileHandlers();
 registerSearchBoxHandlers({ getInputWindow: () => inputWindow });
 registerTrayHandlers({ getTrayManager: () => trayManager });
+powerMonitor.on("resume", () => {
+	const win = mainWindow?.getWindow();
+	if (win && !win.isDestroyed()) win.webContents.send("system:resume");
+});
 app.on("before-quit", () => {
 	isQuitting = true;
-	console.log("🛑 Shutting down processes...");
+	console.log(" Shutting down processes...");
 	pythonProcess?.stop();
 	rustProcess?.stop();
 });

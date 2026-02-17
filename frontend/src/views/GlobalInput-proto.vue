@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, shallowRef, onMounted, nextTick, watch } from 'vue'
+import { ref, shallowRef, onMounted, nextTick, onUnmounted, watch } from 'vue'
 
 /* ------------------ State ------------------ */
 const inputRef = ref<HTMLInputElement | null>(null)
@@ -8,10 +8,30 @@ const query = ref('')
 const results = shallowRef<string[]>([]) // Optimization: shallowRef for non-deep reactivity
 const loading = ref(false)
 const selectedIndex = ref(0) // For keyboard navigation
-
+const lastHeight = ref(60)
+const searchWindowFocused = ref(true) // Track focus state for better UX
+let removeBlur: (() => void) | null = null
+let removeFocus: (() => void) | null = null
 /* ------------------ Lifecycle ------------------ */
 onMounted(() => {
   inputRef.value?.focus()
+  removeBlur = window.electronAPI.on('window:blur', () => {
+    searchWindowFocused.value = false
+  })
+
+  removeFocus = window.electronAPI.on('window:focus', () => {
+    searchWindowFocused.value = true
+  })
+})
+onUnmounted(() => {
+  removeBlur?.()
+  removeFocus?.()
+})
+watch(searchWindowFocused, async (focused) => {
+  if (focused) {
+    await nextTick()
+    resizeWindow(lastHeight.value)
+  }
 })
 
 /* ------------------ Search Logic ------------------ */
@@ -21,14 +41,16 @@ let searchTimer: number | undefined
 const handleSearch = (e: Event) => {
   const value = (e.target as HTMLInputElement).value
   query.value = value
-
   // Reset selection
   selectedIndex.value = 0
-  
   clearTimeout(searchTimer)
   searchTimer = window.setTimeout(() => executeSearch(value), 250) // 250ms debounce
 }
+function resizeWindow(height: number) {
+  // Fallback to standard height if 0 passed
 
+  window.electronAPI.searchBox.resize(height > 0 ? height : 60)
+}
 async function executeSearch(value: string) {
   if (!value.trim()) {
     results.value = []
@@ -43,35 +65,29 @@ async function executeSearch(value: string) {
 
   try {
     // 1. Pre-expand window slightly to show loading state if needed
-    // await window.electronAPI.searchBox.resize(600) 
-    
+    // await window.electronAPI.searchBox.resize(600)
+
     // 2. Fetch
     const res = await window.electronAPI.searchBox.search(value)
-    
+
     // 3. Update data
     results.value = res.files || []
-    
+
     // 4. Calculate Height & Resize Window
     // Base height (60px) + (Item Height (44px) * Count) + Padding
     const itemHeight = 44
     const listHeight = Math.min(results.value.length * itemHeight, 400) // Max height cap
-    const totalHeight = 60 + (results.value.length > 0 ? listHeight + 16 : 0)
-    
+    const totalHeight = 60 + listHeight + 16
+    lastHeight.value = totalHeight
     resizeWindow(totalHeight)
-
-  } catch (err) {
-    console.error('Search failed', err)
+  } catch (err: any) {
+    window.electronAPI.log.error(`Search failed: ${err.message || err}`)
     results.value = []
+    lastHeight.value = 60
     resizeWindow(60)
   } finally {
     loading.value = false
   }
-}
-
-function resizeWindow(height: number) {
-   // Fallback to standard height if 0 passed
-   const h = height > 0 ? height : 60
-   window.electronAPI.searchBox.resize(h)
 }
 
 /* ------------------ Navigation & Actions ------------------ */
@@ -80,9 +96,8 @@ async function openItem(item: string) {
   // Visual feedback before close
   const el = document.querySelector('.selected') as HTMLElement
   if (el) el.style.transform = 'scale(0.98)'
-  
+
   setTimeout(async () => {
-    console.log('Opening:', item)
     await window.electronAPI.files.openItem(item)
     // Optional: Reset query or close window handled by main process
   }, 100)
@@ -107,7 +122,7 @@ function onKeydown(e: KeyboardEvent) {
       break
     case 'Enter':
       e.preventDefault()
-      openItem(results.value[selectedIndex.value])
+      openItem(results.value[selectedIndex.value]!)
       break
     case 'Escape':
       e.preventDefault()
@@ -115,7 +130,6 @@ function onKeydown(e: KeyboardEvent) {
       break
   }
 }
-
 function scrollToSelected() {
   nextTick(() => {
     const el = listRef.value?.children[selectedIndex.value] as HTMLElement
@@ -129,7 +143,13 @@ function scrollToSelected() {
 <template>
   <div class="glass-panel">
     <div class="input-wrapper">
-      <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <svg
+        class="search-icon"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+      >
         <circle cx="11" cy="11" r="8"></circle>
         <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
       </svg>
@@ -145,11 +165,7 @@ function scrollToSelected() {
       <div v-if="loading" class="spinner-mini"></div>
     </div>
 
-    <ul 
-      v-if="results.length" 
-      ref="listRef" 
-      class="results-list"
-    >
+    <ul v-if="searchWindowFocused && results.length" ref="listRef" class="results-list">
       <div class="separator"></div>
       <li
         v-for="(item, i) in results"
@@ -159,10 +175,14 @@ function scrollToSelected() {
         @click="openItem(item)"
         @mouseenter="selectedIndex = i"
       >
-        <div class="icon-placeholder">📄</div> <span class="text-content">{{ item }}</span>
+        <div class="icon-placeholder">📄</div>
+        <span class="text-content">{{ item }}</span>
         <span v-if="i === selectedIndex" class="enter-hint">↵</span>
       </li>
     </ul>
+    <div v-if="searchWindowFocused && results.length === 0" class="results-list no-results">
+      No results available
+    </div>
   </div>
 </template>
 
@@ -173,20 +193,20 @@ function scrollToSelected() {
   height: 100vh; /* Occupy full webview height */
   display: flex;
   flex-direction: column;
-  
+
   /* The iOS Glass Effect */
   background: rgba(28, 28, 30, 0.65);
   backdrop-filter: blur(40px) saturate(180%);
   -webkit-backdrop-filter: blur(40px) saturate(180%);
-  
+
   border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: 
+  box-shadow:
     0 20px 40px rgba(0, 0, 0, 0.4),
     inset 0 1px 0 rgba(255, 255, 255, 0.1);
-    
+
   border-radius: 12px;
   overflow: hidden;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   color: #fff;
 }
 
@@ -215,7 +235,7 @@ input {
   color: #fff;
   font-size: 20px;
   font-weight: 400;
-  caret-color: #0A84FF; /* iOS Blue */
+  caret-color: #0a84ff; /* iOS Blue */
 }
 
 input::placeholder {
@@ -227,12 +247,16 @@ input::placeholder {
   width: 16px;
   height: 16px;
   border: 2px solid rgba(255, 255, 255, 0.1);
-  border-top-color: #0A84FF;
+  border-top-color: #0a84ff;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
 
-@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 /* ------------------ Results List ------------------ */
 .separator {
@@ -247,7 +271,7 @@ input::placeholder {
   margin: 0;
   padding: 0 8px 8px 8px;
   overflow-y: auto;
-  
+
   /* Scrollbar Hiding Techniques */
   scrollbar-width: none; /* Firefox */
   -ms-overflow-style: none; /* IE/Edge */
@@ -255,6 +279,13 @@ input::placeholder {
 
 .results-list::-webkit-scrollbar {
   display: none; /* Chrome/Safari */
+}
+.no-results {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 14px;
 }
 
 /* ------------------ Result Item ------------------ */
@@ -266,7 +297,9 @@ input::placeholder {
   margin-bottom: 2px;
   border-radius: 8px;
   cursor: pointer;
-  transition: background 0.15s ease, transform 0.1s;
+  transition:
+    background 0.15s ease,
+    transform 0.1s;
   font-size: 14px;
   color: rgba(255, 255, 255, 0.85);
 }

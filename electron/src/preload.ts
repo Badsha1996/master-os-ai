@@ -7,6 +7,8 @@ const allowedOnChannels = [
   "ai:stream-end",
   "ai:stream-error",
   "ui:open-setting",
+  "window:blur",
+  "window:focus",
 ];
 
 const allowedInvokeChannels = [
@@ -14,13 +16,14 @@ const allowedInvokeChannels = [
   "ai:request-stream",
   "file:search",
 ] as const;
-
+interface FileSearchResponse {
+  files: string[];
+}
 type InvokeChannel = (typeof allowedInvokeChannels)[number];
 
 export interface ElectronAPI {
   invoke: (channel: InvokeChannel, data?: any) => Promise<any>;
   on: (channel: string, callback: (data: any) => void) => () => void;
-
 
   // Chat API
   chat: {
@@ -38,8 +41,14 @@ export interface ElectronAPI {
     openItem: (path: string) => Promise<void>;
   };
   searchBox: {
-    search: (query: string) => Promise<string[]>;
+    search: (query: string) => Promise<FileSearchResponse>;
     resize: (height: number) => Promise<void>;
+  };
+  // Logs API
+  log: {
+    info: (message: string, source?: string) => Promise<void>;
+    warn: (message: string, source?: string) => Promise<void>;
+    error: (message: string, source?: string) => Promise<void>;
   };
   removeAllStreamListeners: {};
 }
@@ -82,14 +91,26 @@ const electronAPI: ElectronAPI = {
     openItem: (path: string) => ipcRenderer.invoke("open:path", path),
   },
   searchBox: {
-    search: (query: string) =>{
+    search: (query: string) => {
       return ipcRenderer.invoke("file:search", {
         endpoint: `/api/file/search`,
         method: "POST",
-        query: encodeURIComponent(query)
-      })},
+        query: encodeURIComponent(query),
+      });
+    },
     resize: (height: number) =>
-      ipcRenderer.invoke("input:resize-window", height),
+      ipcRenderer.invoke("input:resize-window", height)
+    ,
+  },
+
+  // logs API
+  log: {
+    info: (message: string, source?: string) =>
+      ipcRenderer.invoke("ui:log", { level: "info", message, source }),
+    warn: (message: string, source?: string) =>
+      ipcRenderer.invoke("ui:log", { level: "warn", message, source }),
+    error: (message: string, source?: string) =>
+      ipcRenderer.invoke("ui:log", { level: "error", message, source }),
   },
 
   removeAllStreamListeners: () => {
@@ -101,9 +122,3 @@ const electronAPI: ElectronAPI = {
 };
 
 contextBridge.exposeInMainWorld("electronAPI", electronAPI);
-
-declare global {
-  interface Window {
-    electronAPI: ElectronAPI;
-  }
-}
