@@ -47,10 +47,11 @@ var __require = /* @__PURE__ */ createRequire(import.meta.url);
 //#region src/tray/trayManager.ts
 var TrayManager = class {
 	tray;
-	constructor(onSettingsClick) {
+	constructor(onTrayClick, onSettingsClick) {
 		const image = this.getIcon("idle");
 		image.setTemplateImage(true);
 		this.tray = new Tray(image);
+		this.tray.on("click", onTrayClick);
 		const menu = Menu.buildFromTemplate([
 			{
 				label: "Settings",
@@ -222,8 +223,7 @@ var AppWindow = class {
 		this.attachEvents();
 	}
 	attachEvents() {
-		if (!this.window) return;
-		this.window.once("ready-to-show", () => this.show());
+		if (!this.window || this.window.isDestroyed()) return;
 		this.window.on("close", (e$1) => {
 			if (!this.isQuittingRef()) {
 				e$1.preventDefault();
@@ -239,7 +239,7 @@ var AppWindow = class {
 		});
 	}
 	async loadUI() {
-		if (!this.window) return;
+		if (!this.window || this.window.isDestroyed()) return;
 		try {
 			if (process.env.NODE_ENV === "development") await this.window.loadURL("http://localhost:5173");
 			else if (process.env.VITE_DEV_SERVER_URL) await this.window.loadURL(`${process.env.VITE_DEV_SERVER_URL}`);
@@ -251,17 +251,18 @@ var AppWindow = class {
 		}
 	}
 	show() {
-		if (!this.window) return;
+		if (!this.window || this.window.isDestroyed()) return;
 		this.window.show();
 	}
 	hide() {
+		if (!this.window || this.window.isDestroyed()) return;
 		this.window?.hide();
 	}
 	getWindow() {
 		return this.window;
 	}
 	toggle() {
-		if (!this.window) return;
+		if (!this.window || this.window.isDestroyed()) return;
 		if (this.window.isVisible()) this.hide();
 		else this.show();
 	}
@@ -5831,7 +5832,8 @@ app.whenReady().then(async () => {
 	app.setLoginItemSettings({ openAtLogin: true });
 	if (process.platform === "darwin") app.dock?.hide();
 	await createWindow();
-	trayManager = new TrayManager();
+	await toggleInputWindow();
+	trayManager = new TrayManager(() => mainWindow?.toggle());
 	registerHotkeys();
 });
 

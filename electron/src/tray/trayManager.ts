@@ -6,11 +6,12 @@ export type TrayStatus = "idle" | "thinking" | "error";
 export class TrayManager {
   private tray: Tray;
 
-  constructor(onSettingsClick?: () => void) {
+  constructor(onTrayClick: () => void,onSettingsClick?: () => void, ) {
     const image = this.getIcon("idle");
     image.setTemplateImage(true);
 
     this.tray = new Tray(image);
+    this.tray.on("click", onTrayClick);
 
     const menu = Menu.buildFromTemplate([
       {

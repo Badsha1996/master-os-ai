@@ -24,8 +24,8 @@ export class AppWindow {
     this.attachEvents();
   }
   private attachEvents() {
-    if (!this.window) return;
-    this.window.once("ready-to-show", () => this.show());
+    if (!this.window || this.window.isDestroyed()) return;
+    // this.window.once("ready-to-show", () => this.show());
     this.window.on("close", (e) => {
       if (!this.isQuittingRef()) {
         e.preventDefault();
@@ -44,7 +44,7 @@ export class AppWindow {
     });
   }
   async loadUI() {
-    if (!this.window) return;
+    if (!this.window || this.window.isDestroyed()) return;
 
     try {
       if (process.env.NODE_ENV === "development") {
@@ -64,18 +64,19 @@ export class AppWindow {
     }
   }
   show() {
-    if (!this.window) return;
+    if (!this.window || this.window.isDestroyed()) return;
     this.window.show();
   }
 
   hide() {
+    if (!this.window || this.window.isDestroyed()) return;
     this.window?.hide();
   }
   getWindow() {
     return this.window;
   }
   toggle() {
-    if (!this.window) return;
+    if (!this.window || this.window.isDestroyed()) return;
 
     if (this.window.isVisible()) {
       this.hide();

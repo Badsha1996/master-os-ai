@@ -109,6 +109,7 @@ app.whenReady().then(async () => {
   });
   if (process.platform === "darwin") app.dock?.hide();
   await createWindow();
-  trayManager = new TrayManager();
+  await toggleInputWindow();
+  trayManager = new TrayManager(()=>mainWindow?.toggle());
   registerHotkeys();
 });
